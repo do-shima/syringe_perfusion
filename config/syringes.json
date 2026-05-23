@@ -1,0 +1,25 @@
+{
+  "syringes": {
+    "terumo_ss05lz_5ml": {
+      "display_name": "Terumo SS-05LZ 5 mL Luer-lock",
+      "nominal_inner_diameter_mm": 13.0,
+      "calibrated_ul_per_mm": 130.4,
+      "calibration_date": "",
+      "calibration_note": "Initial calibration from 15.37 mm/min x 30 sec, mean about 1.002 g"
+    },
+    "generic_2_5ml": {
+      "display_name": "Generic 2.5 mL Luer-lock",
+      "nominal_inner_diameter_mm": 10.0,
+      "calibrated_ul_per_mm": null,
+      "calibration_date": "",
+      "calibration_note": "Nominal only. Must be calibrated with water."
+    },
+    "generic_1ml": {
+      "display_name": "Generic 1 mL Luer-lock",
+      "nominal_inner_diameter_mm": 4.7,
+      "calibrated_ul_per_mm": null,
+      "calibration_date": "",
+      "calibration_note": "Nominal only. Must be calibrated with water."
+    }
+  }
+}

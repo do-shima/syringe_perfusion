@@ -1,0 +1,28 @@
+{
+  "pumps": {
+    "IN": {
+      "name": "Pump IN",
+      "role": "stimulus_in",
+      "port": "COM5",
+      "baudrate": 9600,
+      "terminator": "\\r\\n",
+      "commands": {
+        "start_forward": "Q6H2D",
+        "start_reverse": "Q6H3D",
+        "stop": "Q6H6D"
+      }
+    },
+    "OUT": {
+      "name": "Pump OUT",
+      "role": "waste_or_wash",
+      "port": "COM6",
+      "baudrate": 9600,
+      "terminator": "\\r\\n",
+      "commands": {
+        "start_forward": "Q6H2D",
+        "start_reverse": "Q6H3D",
+        "stop": "Q6H6D"
+      }
+    }
+  }
+}

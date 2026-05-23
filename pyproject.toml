@@ -1,0 +1,18 @@
+[project]
+name = "syringe-perfusion"
+version = "0.1.0"
+description = "A4 syringe pump control tools for USB virtual COM operation"
+requires-python = ">=3.10"
+dependencies = [
+  "pyserial>=3.5",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pyinstaller>=6.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

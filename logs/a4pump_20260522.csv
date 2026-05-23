@@ -1,0 +1,4 @@
+timestamp,event_id,dish_id,condition,trigger_source,pump,port,action,command,profile,syringe,speed_mm_min,duration_s,target_volume_ul,estimated_volume_ul,response,note
+2026-05-22T19:15:34+09:00,8d6e468a-7fed-4552-af33-2e0ec366884a,,,CLI,IN,COM5,start-forward,Q6H2D,fast30_1ml,terumo_ss05lz_5ml,15.37,30.0,1000.0,1002.124,DRY_RUN,Main candidate for early response observation.
+2026-05-22T19:16:16+09:00,f8ddd9e4-c689-4d70-bc05-f64d0db1f0c6,,,pytest,IN,COM5,stop,Q6H6D,,,,,,,DRY_RUN,
+2026-05-22T19:16:16+09:00,42bfe59b-917b-4783-8f16-5641155b8230,,,pytest,OUT,COM6,stop,Q6H6D,,,,,,,DRY_RUN,

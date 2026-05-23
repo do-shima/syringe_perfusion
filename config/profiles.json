@@ -1,0 +1,51 @@
+{
+  "profiles": {
+    "fast30_1ml": {
+      "display_name": "Fast-30: 1 mL / 30 sec",
+      "syringe": "terumo_ss05lz_5ml",
+      "mode": "speed_duration",
+      "speed_mm_min": 15.37,
+      "duration_s": 30,
+      "target_volume_ul": 1000,
+      "direction": "forward",
+      "note": "Main candidate for early response observation."
+    },
+    "fast20_1ml": {
+      "display_name": "Fast-20: 1 mL / 20 sec",
+      "syringe": "terumo_ss05lz_5ml",
+      "mode": "volume_duration",
+      "target_volume_ul": 1000,
+      "duration_s": 20,
+      "direction": "forward",
+      "note": "Sharper stimulus input. Validate by dye test."
+    },
+    "gentle60_1ml": {
+      "display_name": "Gentle-60: 1 mL / 60 sec",
+      "syringe": "terumo_ss05lz_5ml",
+      "mode": "volume_duration",
+      "target_volume_ul": 1000,
+      "duration_s": 60,
+      "direction": "forward",
+      "note": "Lower flow condition."
+    },
+    "gentle120_1ml": {
+      "display_name": "Gentle-120: 1 mL / 120 sec",
+      "syringe": "terumo_ss05lz_5ml",
+      "mode": "volume_duration",
+      "target_volume_ul": 1000,
+      "duration_s": 120,
+      "direction": "forward",
+      "note": "Stable, low-flow condition."
+    },
+    "drain30_1ml": {
+      "display_name": "Drain-30: 1 mL / 30 sec reverse",
+      "syringe": "terumo_ss05lz_5ml",
+      "mode": "speed_duration",
+      "speed_mm_min": 15.37,
+      "duration_s": 30,
+      "target_volume_ul": 1000,
+      "direction": "reverse",
+      "note": "For OUT pump. Reverse suction must be validated physically."
+    }
+  }
+}
