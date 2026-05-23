@@ -10,6 +10,9 @@ from .a4 import A4Pump, list_serial_ports, pump_from_config
 from .config import load_config
 from .logger import log_command
 from .profiles import calculate, calculate_profile, result_to_dict, ul_per_mm_from_inner_diameter
+from .recipe_engine import RecipeEngine
+from .recipe_model import validate_recipe
+from .recipe_store import list_recipes, load_recipe
 
 
 ACTION_METHODS = {
@@ -25,6 +28,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("list-ports", help="List available serial ports")
+
+    list_recipes_parser = subparsers.add_parser("list-recipes", help="List V2 JSON recipes")
+    list_recipes_parser.add_argument("--recipe-dir", default=None)
 
     send = subparsers.add_parser("send", help="Send a start/stop command to one pump")
     send.add_argument("--pump", required=True, help="Pump key, e.g. IN or OUT")
@@ -60,6 +66,15 @@ def build_parser() -> argparse.ArgumentParser:
     calc.add_argument("--flow-ml-min", type=float, default=None)
     calc.add_argument("--speed-mm-min", type=float, default=None)
 
+    validate_recipe_parser = subparsers.add_parser("validate-recipe", help="Validate a V2 recipe JSON file")
+    validate_recipe_parser.add_argument("--recipe", required=True)
+
+    run_recipe = subparsers.add_parser("run-recipe", help="Execute a V2 recipe JSON file")
+    run_recipe.add_argument("--recipe", required=True)
+    add_run_metadata_args(run_recipe)
+    run_recipe.add_argument("--dry-run", action="store_true")
+    run_recipe.add_argument("--assume-yes", action="store_true", help="Accept prompt_check blocks without stdin")
+
     return parser
 
 
@@ -83,6 +98,15 @@ def dispatch(args: argparse.Namespace) -> int:
     if args.command == "list-ports":
         for port in list_serial_ports():
             print(f"{port['device']}\t{port['description']}\t{port['hwid']}")
+        return 0
+
+    if args.command == "list-recipes":
+        for path in list_recipes(args.recipe_dir):
+            try:
+                recipe = load_recipe(path)
+                print(f"{path}\t{recipe.recipe_id}\t{recipe.display_name}")
+            except Exception as exc:
+                print(f"{path}\tINVALID\t{exc}")
         return 0
 
     data = load_config(args.config_dir)
@@ -156,6 +180,29 @@ def dispatch(args: argparse.Namespace) -> int:
             syringe_key=args.syringe,
         )
         print(json.dumps(result_to_dict(result), indent=2, ensure_ascii=False))
+        return 0
+
+    if args.command == "validate-recipe":
+        recipe = load_recipe(args.recipe)
+        validate_recipe(recipe, data)
+        print(f"OK: {recipe.recipe_id} ({len(recipe.blocks)} blocks)")
+        return 0
+
+    if args.command == "run-recipe":
+        recipe = load_recipe(args.recipe)
+        validate_recipe(recipe, data)
+        engine = RecipeEngine(data)
+        events = engine.execute(
+            recipe,
+            dry_run=args.dry_run,
+            context={
+                "dish_id": args.dish_id,
+                "condition": args.condition,
+                "trigger_source": args.trigger_source,
+                "assume_yes": args.assume_yes,
+            },
+        )
+        print(json.dumps(events, ensure_ascii=False))
         return 0
 
     raise ValueError(f"unsupported command: {args.command}")

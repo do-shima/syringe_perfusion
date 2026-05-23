@@ -12,6 +12,8 @@ from .config import logs_dir
 LOG_COLUMNS = [
     "timestamp",
     "event_id",
+    "started_at",
+    "ended_at",
     "dish_id",
     "condition",
     "trigger_source",
@@ -27,6 +29,11 @@ LOG_COLUMNS = [
     "estimated_volume_ul",
     "response",
     "note",
+    "recipe_id",
+    "block_id",
+    "block_type",
+    "relative_time_s",
+    "block_index",
 ]
 
 
@@ -73,10 +80,19 @@ def log_command(
     target_volume_ul: float | str | None = None,
     estimated_volume_ul: float | str | None = None,
     note: str = "",
+    recipe_id: str = "",
+    block_id: str = "",
+    block_type: str = "",
+    relative_time_s: float | str | None = None,
+    block_index: int | str | None = None,
+    started_at: str = "",
+    ended_at: str = "",
     log_root: str | Path | None = None,
 ) -> Path:
     row = {
         "timestamp": result.get("timestamp"),
+        "started_at": started_at,
+        "ended_at": ended_at,
         "dish_id": dish_id,
         "condition": condition,
         "trigger_source": trigger_source,
@@ -92,6 +108,11 @@ def log_command(
         "estimated_volume_ul": _clean(estimated_volume_ul),
         "response": result.get("response", ""),
         "note": note,
+        "recipe_id": recipe_id,
+        "block_id": block_id,
+        "block_type": block_type,
+        "relative_time_s": _clean(relative_time_s),
+        "block_index": _clean(block_index),
     }
     return write_log(row, log_root)
 

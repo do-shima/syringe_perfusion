@@ -1,0 +1,108 @@
+# -----------------------------
+# Python bytecode / cache
+# -----------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+
+# -----------------------------
+# Python build / package artifacts
+# -----------------------------
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+
+# -----------------------------
+# PyInstaller
+# -----------------------------
+*.manifest
+
+# PyInstaller spec files:
+# Ignore by default. If you later customize a .spec file for reproducible builds,
+# remove this line and commit that .spec file.
+*.spec
+
+# -----------------------------
+# Virtual environments
+# -----------------------------
+.venv/
+venv/
+env/
+ENV/
+venv*/
+.conda/
+
+# -----------------------------
+# Test / coverage / lint caches
+# -----------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+hypothesis/
+
+# -----------------------------
+# Logs
+# Keep logs directory, ignore generated CSV logs
+# -----------------------------
+logs/*
+!logs/.gitkeep
+*.log
+
+# -----------------------------
+# Runtime / local-only settings
+# -----------------------------
+# Keep default config/*.json under version control.
+# Use these local files for machine-specific COM ports or private settings.
+config/*.local.json
+config/local*.json
+recipes/*.local.json
+
+# -----------------------------
+# Temporary / backup files
+# -----------------------------
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+~$*
+.~lock.*
+
+# -----------------------------
+# Jupyter
+# -----------------------------
+.ipynb_checkpoints/
+
+# -----------------------------
+# IDE / editor
+# -----------------------------
+.vscode/
+.idea/
+*.code-workspace
+
+# -----------------------------
+# OS metadata
+# -----------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# -----------------------------
+# Windows shortcuts / misc
+# -----------------------------
+*.lnk
+
+# -----------------------------
+# Generated executable folders
+# -----------------------------
+A4PumpGUI/
+a4ctl/

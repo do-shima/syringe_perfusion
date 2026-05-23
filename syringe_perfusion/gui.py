@@ -9,6 +9,7 @@ from typing import Any, Callable
 from .a4 import list_serial_ports
 from .cli import pushpull, run_profile, send_action, stop_all
 from .config import load_config
+from .gui_recipe import RecipeBuilderFrame
 from .profiles import calculate, calculate_profile, result_to_dict, ul_per_mm_from_inner_diameter
 
 
@@ -63,10 +64,12 @@ class A4PumpApp(tk.Tk):
         calc_tab = ttk.Frame(tabs, padding=12)
         profile_tab = ttk.Frame(tabs, padding=12)
         run_tab = ttk.Frame(tabs, padding=12)
+        recipe_tab = RecipeBuilderFrame(tabs, self)
         tabs.add(pump_tab, text="Pump")
         tabs.add(calc_tab, text="Syringe / Calculator")
         tabs.add(profile_tab, text="Profile")
         tabs.add(run_tab, text="Run")
+        tabs.add(recipe_tab, text="Recipe Builder")
 
         self._build_pump_tab(pump_tab)
         self._build_calc_tab(calc_tab)

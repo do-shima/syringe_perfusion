@@ -126,6 +126,131 @@ a4ctl.exe run-profile --pump IN --profile fast30_1ml --dish-id Dish001 --conditi
 a4ctl.exe pushpull --in-pump IN --out-pump OUT --profile-in fast30_1ml --profile-out drain30_1ml --out-delay 0.5 --dish-id Dish001 --condition StimA --trigger-source NIS
 ```
 
+V2レシピを呼ぶ場合:
+
+```powershell
+a4ctl.exe run-recipe --recipe recipes\pushpull_fast30.json --dish-id Dish001 --condition StimA --trigger-source NIS --assume-yes
+```
+
+## V2 Recipe Builder
+
+V2では、ブロックを縦に並べる方式のレシピビルダーを追加しています。Tkinter / ttkのみで実装しており、Qt、Electron、WebView、Blockly本体は使いません。ドラッグ＆ドロップではなく、`Move up` / `Move down` で順序を変更します。
+
+利用できるブロック:
+
+- `pump_start`: `IN` / `OUT` に `start_forward` または `start_reverse` を送信
+- `pump_stop`: 指定ポンプに `Q6H6D`
+- `stop_all`: 全ポンプに `Q6H6D`
+- `wait`: 指定秒数待つ
+- `log_marker`: ハードウェア操作なしでログだけ記録
+- `prompt_check`: GUIでは確認ダイアログ、CLIでは `--assume-yes` がない場合に標準入力で確認
+
+GUIでは `Recipe Builder` タブからブロック追加、編集、上下移動、複製、削除、保存、読み込み、dry-run、実行ができます。Run前にはRecipe previewとチェックリストを表示します。OUT reverse / `start_reverse` を含む場合は警告を表示します。
+
+## レシピJSON形式
+
+レシピは `recipes/` にJSONとして保存します。
+
+```json
+{
+  "schema_version": 2,
+  "recipe_id": "pushpull_fast30_v1",
+  "display_name": "Push-pull Fast-30",
+  "description": "",
+  "blocks": [
+    {
+      "id": "b001",
+      "type": "pump_start",
+      "pump": "IN",
+      "action": "start_forward",
+      "profile": "fast30_1ml",
+      "note": "Stimulus injection"
+    },
+    {
+      "id": "b002",
+      "type": "wait",
+      "duration_s": 0.5
+    },
+    {
+      "id": "b003",
+      "type": "pump_start",
+      "pump": "OUT",
+      "action": "start_reverse",
+      "profile": "drain30_1ml",
+      "note": "Waste suction"
+    },
+    {
+      "id": "b004",
+      "type": "wait",
+      "duration_s": 35.0
+    },
+    {
+      "id": "b005",
+      "type": "stop_all",
+      "note": "Safety stop"
+    }
+  ]
+}
+```
+
+同梱サンプル:
+
+- `recipes/in_fast30.json`
+- `recipes/pushpull_fast30.json`
+
+## V2 CLI
+
+レシピ一覧:
+
+```powershell
+python -m syringe_perfusion.cli list-recipes
+```
+
+レシピ検証:
+
+```powershell
+python -m syringe_perfusion.cli validate-recipe --recipe recipes/pushpull_fast30.json
+```
+
+dry-run:
+
+```powershell
+python -m syringe_perfusion.cli run-recipe --recipe recipes/pushpull_fast30.json --dish-id Dish001 --condition StimA --trigger-source NIS --dry-run
+```
+
+実行:
+
+```powershell
+python -m syringe_perfusion.cli run-recipe --recipe recipes/pushpull_fast30.json --dish-id Dish001 --condition StimA --trigger-source NIS --assume-yes
+```
+
+`prompt_check` ブロックがある場合、`--assume-yes` を付けないCLI実行では標準入力で確認します。dry-runでは確認を省略します。
+
+## GUIでのレシピ作成手順
+
+1. `python run_gui.py` を起動します。
+2. `Recipe Builder` タブを開きます。
+3. 左のBlock paletteからブロックを追加します。
+4. 中央のRecipe timelineでブロックを選択します。
+5. 右のProperties editorで `pump`、`action`、`profile`、`duration_s`、`message`、`note` を編集し、`Apply changes` を押します。
+6. `Move up` / `Move down` で順序を調整します。
+7. `Dry-run` でログと実行順を確認します。
+8. 実機実行前にRecipe previewとチェックリストを確認します。
+
+## Safety stop
+
+`STOP ALL` は確認ダイアログなしで即時実行します。Recipe BuilderタブではEscキーでも `STOP ALL` を呼びます。レシピ実行中に例外が出た場合、可能な範囲で全ポンプ停止を試みます。GUIはCOMポートを開きっぱなしにせず、送信時に開いて閉じます。
+
+V2ログでは既存CSVに次の列を追加しています。
+
+- `started_at`
+- `ended_at`
+- `recipe_id`
+- `block_id`
+- `block_type`
+- `relative_time_s`
+- `block_index`
+
 ## dry-run
 
 実機なしでログとコマンドを確認できます。

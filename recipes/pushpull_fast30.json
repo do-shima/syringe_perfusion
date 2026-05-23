@@ -1,0 +1,39 @@
+{
+  "schema_version": 2,
+  "recipe_id": "pushpull_fast30_v1",
+  "display_name": "Push-pull Fast-30",
+  "description": "Start IN Fast-30, delay OUT reverse suction, wait 35 sec, then stop all pumps.",
+  "blocks": [
+    {
+      "id": "b001",
+      "type": "pump_start",
+      "pump": "IN",
+      "action": "start_forward",
+      "profile": "fast30_1ml",
+      "note": "Stimulus injection"
+    },
+    {
+      "id": "b002",
+      "type": "wait",
+      "duration_s": 0.5
+    },
+    {
+      "id": "b003",
+      "type": "pump_start",
+      "pump": "OUT",
+      "action": "start_reverse",
+      "profile": "drain30_1ml",
+      "note": "Waste suction"
+    },
+    {
+      "id": "b004",
+      "type": "wait",
+      "duration_s": 35.0
+    },
+    {
+      "id": "b005",
+      "type": "stop_all",
+      "note": "Safety stop"
+    }
+  ]
+}
