@@ -12,7 +12,7 @@ from .blocks import block_summary, default_block
 from .recipe_engine import RecipeEngine
 from .recipe_model import Recipe, block_id, validate_recipe
 from .recipe_store import default_recipe_dir, load_recipe, save_recipe
-from .ui_theme import create_card, status_badge
+from .ui_theme import ScrollableFrame, create_card, status_badge
 
 
 PALETTE = [
@@ -48,6 +48,7 @@ class RecipeBuilderFrame(ttk.Frame):
         self.prop_note_var = tk.StringVar(value="")
         self.validation_status_var = tk.StringVar(value="Validation: not checked")
         self.recipe_status_var = tk.StringVar(value="0 blocks")
+        self.selected_block_index: int | None = None
 
         self._build()
         self.add_block("pump_start")
@@ -64,19 +65,20 @@ class RecipeBuilderFrame(ttk.Frame):
         ttk.Entry(toolbar, textvariable=self.recipe_id_var).grid(row=2, column=1, sticky="ew", padx=(0, 12), pady=4)
         ttk.Label(toolbar, text="Name", style="Card.TLabel").grid(row=2, column=2, sticky="w", padx=(0, 6), pady=4)
         ttk.Entry(toolbar, textvariable=self.display_name_var).grid(row=2, column=3, sticky="ew", padx=(0, 12), pady=4)
-        status_badge(toolbar, "READY", "enabled").grid(row=2, column=4, sticky="w", padx=(0, 8))
+        self.validation_badge = status_badge(toolbar, "NOT CHECKED", "disabled")
+        self.validation_badge.grid(row=2, column=4, sticky="w", padx=(0, 8))
         actions = [
-            ("[New] New", self.new_recipe, "Secondary.TButton"),
-            ("[Open] Open", self.load_recipe_dialog, "Secondary.TButton"),
-            ("[Save] Save", self.save_current, "Success.TButton"),
-            ("[Save] Save As", self.save_as, "Success.TButton"),
-            ("[Check] Validate", self.validate_current, "Secondary.TButton"),
-            ("[Run] Dry-run", self.dry_run, "Accent.TButton"),
-            ("[Run] Run", self.run_recipe, "Accent.TButton"),
-            ("[Stop] Stop all", self.stop_all_now, "Danger.TButton"),
+            ("New", self.new_recipe, "Secondary.TButton"),
+            ("Open", self.load_recipe_dialog, "Secondary.TButton"),
+            ("Save", self.save_current, "Success.TButton"),
+            ("Save As", self.save_as, "Success.TButton"),
+            ("Validate", self.validate_current, "Secondary.TButton"),
+            ("Dry-run", self.dry_run, "Primary.TButton"),
+            ("Run", self.run_recipe, "Primary.TButton"),
+            ("Stop all", self.stop_all_now, "Danger.TButton"),
         ]
         for index, (label, command, style) in enumerate(actions):
-            ttk.Button(toolbar, text=label, command=command, style=style).grid(
+            ttk.Button(toolbar, text=label, command=command, style=style, takefocus=False).grid(
                 row=3 + index // 4, column=index % 4, sticky="ew", padx=3, pady=3
             )
 
@@ -90,31 +92,29 @@ class RecipeBuilderFrame(ttk.Frame):
         for row, (label, block_type) in enumerate(PALETTE, start=2):
             ttk.Button(
                 self.library_frame,
-                text=f"[Add] {label}",
+                text=label,
                 style="Secondary.TButton",
+                takefocus=False,
                 command=lambda bt=block_type: self.add_block(bt),
             ).grid(row=row, column=0, sticky="ew", pady=4)
 
         timeline = create_card(panes, "Recipe Steps", "Select a step, then edit it in the inspector.")
         timeline.grid(row=0, column=1, sticky="nsew", padx=(0, 10))
-        timeline.rowconfigure(0, weight=1)
+        timeline.rowconfigure(2, weight=1)
         timeline.columnconfigure(0, weight=1)
-        self.timeline = tk.Listbox(timeline, activestyle="dotbox", exportselection=False)
-        self.timeline.grid(row=2, column=0, sticky="nsew", pady=(8, 0))
-        self.timeline.bind("<<ListboxSelect>>", lambda _e: self.load_selected_properties())
-        scrollbar = ttk.Scrollbar(timeline, orient="vertical", command=self.timeline.yview)
-        scrollbar.grid(row=2, column=1, sticky="ns", pady=(8, 0))
-        self.timeline.configure(yscrollcommand=scrollbar.set)
+        self.steps_scroll = ScrollableFrame(timeline, height=420)
+        self.steps_scroll.grid(row=2, column=0, sticky="nsew", pady=(8, 0))
+        self.step_cards: list[ttk.Frame] = []
 
         move_bar = ttk.Frame(timeline)
-        move_bar.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        move_bar.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         for label, command in [
-            ("[Up] Up", self.move_up),
-            ("[Down] Down", self.move_down),
-            ("[Copy] Duplicate", self.duplicate_selected),
-            ("[Delete] Delete", self.delete_selected),
+            ("Up", self.move_up),
+            ("Down", self.move_down),
+            ("Duplicate", self.duplicate_selected),
+            ("Delete", self.delete_selected),
         ]:
-            ttk.Button(move_bar, text=label, command=command, style="Secondary.TButton").pack(side="left", padx=(0, 6))
+            ttk.Button(move_bar, text=label, command=command, style="Secondary.TButton", takefocus=False).pack(side="left", padx=(0, 6))
 
         props = create_card(panes, "Inspector", "Edit the selected block.")
         props.grid(row=0, column=2, sticky="nsew")
@@ -128,44 +128,51 @@ class RecipeBuilderFrame(ttk.Frame):
             state="readonly",
         )
         self._prop_row(props, 4, "Pump", self.prop_pump_combo)
+        self.prop_action_combo = ttk.Combobox(
+            props,
+            textvariable=self.prop_action_var,
+            values=["start_forward", "start_reverse", "stop"],
+            state="readonly",
+        )
         self._prop_row(
             props,
             5,
             "Action",
-            ttk.Combobox(
-                props,
-                textvariable=self.prop_action_var,
-                values=["start_forward", "start_reverse", "stop"],
-                state="readonly",
-            ),
+            self.prop_action_combo,
+        )
+        self.prop_direction_combo = ttk.Combobox(
+            props,
+            textvariable=self.prop_direction_var,
+            values=["forward", "reverse"],
+            state="readonly",
         )
         self._prop_row(
             props,
             6,
             "Direction",
-            ttk.Combobox(
-                props,
-                textvariable=self.prop_direction_var,
-                values=["forward", "reverse"],
-                state="readonly",
-            ),
+            self.prop_direction_combo,
+        )
+        self.prop_profile_combo = ttk.Combobox(
+            props,
+            textvariable=self.prop_profile_var,
+            values=list(self.app.data["profiles"]),
+            state="readonly",
         )
         self._prop_row(
             props,
             7,
             "Profile",
-            ttk.Combobox(
-                props,
-                textvariable=self.prop_profile_var,
-                values=list(self.app.data["profiles"]),
-                state="readonly",
-            ),
+            self.prop_profile_combo,
         )
-        self._prop_row(props, 8, "Duration s", ttk.Entry(props, textvariable=self.prop_duration_var))
-        self._prop_row(props, 9, "Duration ms", ttk.Entry(props, textvariable=self.prop_duration_ms_var))
-        self._prop_row(props, 10, "Message", ttk.Entry(props, textvariable=self.prop_message_var))
-        self._prop_row(props, 11, "Note", ttk.Entry(props, textvariable=self.prop_note_var))
-        ttk.Button(props, text="[Apply] Apply changes", command=self.apply_properties, style="Accent.TButton").grid(
+        self.prop_duration_entry = ttk.Entry(props, textvariable=self.prop_duration_var)
+        self._prop_row(props, 8, "Duration s", self.prop_duration_entry)
+        self.prop_duration_ms_entry = ttk.Entry(props, textvariable=self.prop_duration_ms_var)
+        self._prop_row(props, 9, "Duration ms", self.prop_duration_ms_entry)
+        self.prop_message_entry = ttk.Entry(props, textvariable=self.prop_message_var)
+        self._prop_row(props, 10, "Message", self.prop_message_entry)
+        self.prop_note_entry = ttk.Entry(props, textvariable=self.prop_note_var)
+        self._prop_row(props, 11, "Note", self.prop_note_entry)
+        ttk.Button(props, text="Apply changes", command=self.apply_properties, style="Primary.TButton", takefocus=False).grid(
             row=12, column=0, columnspan=2, sticky="ew", pady=(12, 0)
         )
         ttk.Label(props, textvariable=self.validation_status_var, style="Subtitle.TLabel").grid(
@@ -177,7 +184,19 @@ class RecipeBuilderFrame(ttk.Frame):
         status.columnconfigure(0, weight=1)
         ttk.Label(status, textvariable=self.recipe_status_var, style="Card.TLabel").grid(row=0, column=0, sticky="w")
 
-        self.log = tk.Text(self, height=6, wrap="word")
+        self.log = tk.Text(
+            self,
+            height=6,
+            wrap="word",
+            font=("Consolas", 9),
+            background="#FFFFFF",
+            foreground="#111827",
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground="#E5E7EB",
+            padx=8,
+            pady=6,
+        )
         self.log.grid(row=3, column=0, sticky="ew", pady=(8, 0))
 
         self.app.bind("<Escape>", lambda _e: self.stop_all_now())
@@ -199,11 +218,13 @@ class RecipeBuilderFrame(ttk.Frame):
         try:
             recipe = self.make_recipe()
             self.validation_status_var.set("Validation: OK")
+            self.validation_badge.configure(text="OK", style="BadgeEnabled.TLabel")
             self.update_status_line(recipe)
             self.append_log("Validation: OK")
             return True
         except Exception as exc:
             self.validation_status_var.set(f"Validation: {exc}")
+            self.validation_badge.configure(text="ERROR", style="BadgeDanger.TLabel")
             self.append_log(f"Validation failed: {exc}")
             return False
 
@@ -222,27 +243,77 @@ class RecipeBuilderFrame(ttk.Frame):
             self.prop_pump_var.set("IN")
 
     def refresh_timeline(self, select: int | None = None) -> None:
-        self.timeline.delete(0, "end")
+        for child in self.steps_scroll.inner.winfo_children():
+            child.destroy()
+        self.step_cards = []
         for index, block in enumerate(self.blocks):
-            text = f"{index + 1:02d}. {block_summary(block)}"
-            self.timeline.insert("end", text)
+            self.render_step_card(index, block)
         self.update_status_line()
         if select is not None and self.blocks:
             select = max(0, min(select, len(self.blocks) - 1))
-            self.timeline.selection_clear(0, "end")
-            self.timeline.selection_set(select)
-            self.timeline.activate(select)
+            self.selected_block_index = select
+            self.refresh_step_selection()
             self.load_selected_properties()
+        elif not self.blocks:
+            self.selected_block_index = None
+            self.prop_type_var.set("Select a step to edit.")
+            self.update_inspector_state("")
+
+    def render_step_card(self, index: int, block: dict[str, Any]) -> None:
+        selected = self.selected_block_index == index
+        style = "StepCardSelected.TFrame" if selected else "StepCard.TFrame"
+        label_style = "StepCardSelected.TLabel" if selected else "StepCard.TLabel"
+        card = ttk.Frame(self.steps_scroll.inner, style=style, padding=12)
+        card.grid(row=index, column=0, sticky="ew", pady=5)
+        card.columnconfigure(1, weight=1)
+        step = ttk.Label(card, text=f"Step {index + 1:02d}", style=label_style)
+        step.grid(row=0, column=0, sticky="w", padx=(0, 10))
+        badge = ttk.Label(card, text=str(block.get("type", "")), style="BadgeDisabled.TLabel")
+        badge.grid(row=0, column=2, sticky="e")
+        summary = ttk.Label(card, text=block_summary(block), style=label_style, wraplength=420)
+        summary.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 2))
+        detail = ttk.Label(card, text=self.step_detail(block), style=label_style, wraplength=420)
+        detail.grid(row=2, column=0, columnspan=3, sticky="w")
+        actions = ttk.Frame(card, style=style)
+        actions.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        for text, command in [
+            ("Up", lambda idx=index: self.move_up(idx)),
+            ("Down", lambda idx=index: self.move_down(idx)),
+            ("Duplicate", lambda idx=index: self.duplicate_selected(idx)),
+            ("Delete", lambda idx=index: self.delete_selected(idx)),
+        ]:
+            ttk.Button(actions, text=text, style="Compact.TButton", takefocus=False, command=command).pack(
+                side="left", padx=(0, 5)
+            )
+        for widget in [card, step, summary, detail, badge]:
+            widget.bind("<Button-1>", lambda _event, idx=index: self.select_step(idx))
+        self.step_cards.append(card)
+
+    def step_detail(self, block: dict[str, Any]) -> str:
+        parts = []
+        for key in ["pump", "profile", "direction", "duration_ms", "duration_s", "message"]:
+            value = block.get(key)
+            if value not in (None, ""):
+                parts.append(f"{key}: {value}")
+        return " | ".join(parts)
+
+    def select_step(self, index: int) -> None:
+        self.selected_block_index = index
+        self.refresh_step_selection()
+        self.load_selected_properties()
+
+    def refresh_step_selection(self) -> None:
+        for index, card in enumerate(self.step_cards):
+            card.configure(style="StepCardSelected.TFrame" if index == self.selected_block_index else "StepCard.TFrame")
 
     def update_status_line(self, recipe: Recipe | None = None) -> None:
         pumps = sorted({str(block.get("pump")) for block in self.blocks if block.get("pump")})
         pump_text = ", ".join(pumps) if pumps else "none"
         validation = "OK" if recipe is not None else "not checked"
-        self.recipe_status_var.set(f"{len(self.blocks)} blocks   Validation: {validation}   Uses pumps: {pump_text}")
+        self.recipe_status_var.set(f"{len(self.blocks)} blocks | Validation: {validation} | Pumps: {pump_text}")
 
     def selected_index(self) -> int | None:
-        selected = self.timeline.curselection()
-        return int(selected[0]) if selected else None
+        return self.selected_block_index
 
     def load_selected_properties(self) -> None:
         index = self.selected_index()
@@ -259,6 +330,30 @@ class RecipeBuilderFrame(ttk.Frame):
         self.prop_duration_ms_var.set(str(block.get("duration_ms", "1000")))
         self.prop_message_var.set(block.get("message", ""))
         self.prop_note_var.set(block.get("note", ""))
+        self.update_inspector_state(block.get("type", ""))
+
+    def update_inspector_state(self, block_type: str) -> None:
+        states = {
+            "pump": block_type in {"pump_start", "pump_stop", "manual_jog"},
+            "action": block_type in {"pump_start", "pump_stop"},
+            "direction": block_type == "manual_jog",
+            "profile": block_type == "pump_start",
+            "duration_s": block_type == "wait",
+            "duration_ms": block_type == "manual_jog",
+            "message": block_type in {"log_marker", "prompt_check"},
+        }
+        widgets = [
+            (self.prop_pump_combo, "pump", "readonly"),
+            (self.prop_action_combo, "action", "readonly"),
+            (self.prop_direction_combo, "direction", "readonly"),
+            (self.prop_profile_combo, "profile", "readonly"),
+            (self.prop_duration_entry, "duration_s", "normal"),
+            (self.prop_duration_ms_entry, "duration_ms", "normal"),
+            (self.prop_message_entry, "message", "normal"),
+        ]
+        for widget, key, enabled_state in widgets:
+            widget.configure(state=enabled_state if states[key] else "disabled")
+        self.prop_note_entry.configure(state="normal")
 
     def apply_properties(self) -> None:
         index = self.selected_index()
@@ -293,22 +388,22 @@ class RecipeBuilderFrame(ttk.Frame):
             return
         self.refresh_timeline(select=index)
 
-    def move_up(self) -> None:
-        index = self.selected_index()
+    def move_up(self, index: int | None = None) -> None:
+        index = self.selected_index() if index is None else index
         if index is None or index == 0:
             return
         self.blocks[index - 1], self.blocks[index] = self.blocks[index], self.blocks[index - 1]
         self.refresh_timeline(select=index - 1)
 
-    def move_down(self) -> None:
-        index = self.selected_index()
+    def move_down(self, index: int | None = None) -> None:
+        index = self.selected_index() if index is None else index
         if index is None or index >= len(self.blocks) - 1:
             return
         self.blocks[index + 1], self.blocks[index] = self.blocks[index], self.blocks[index + 1]
         self.refresh_timeline(select=index + 1)
 
-    def duplicate_selected(self) -> None:
-        index = self.selected_index()
+    def duplicate_selected(self, index: int | None = None) -> None:
+        index = self.selected_index() if index is None else index
         if index is None:
             return
         copied = copy.deepcopy(self.blocks[index])
@@ -316,8 +411,8 @@ class RecipeBuilderFrame(ttk.Frame):
         self.blocks.insert(index + 1, copied)
         self.refresh_timeline(select=index + 1)
 
-    def delete_selected(self) -> None:
-        index = self.selected_index()
+    def delete_selected(self, index: int | None = None) -> None:
+        index = self.selected_index() if index is None else index
         if index is None:
             return
         del self.blocks[index]

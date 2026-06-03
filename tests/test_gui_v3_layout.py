@@ -1,5 +1,5 @@
 from syringe_perfusion.gui import A4PumpApp
-from syringe_perfusion.ui_theme import COLORS
+from syringe_perfusion.ui_theme import COLORS, create_card
 
 
 def make_app() -> A4PumpApp:
@@ -17,7 +17,10 @@ def test_v3_theme_constants_exist() -> None:
 def test_left_navigation_switches_pages() -> None:
     app = make_app()
     try:
+        card = create_card(app.pages["dashboard"], "Test card")
+        assert card.winfo_class() == "TFrame"
         assert set(app.nav_buttons) >= {"dashboard", "pumps", "run", "profiles", "calculator", "recipes"}
+        assert all("[" not in button.cget("text") for button in app.nav_buttons.values())
         app.select_page("profiles")
         assert app.page_title_var.get() == "Profiles"
         app.select_page("recipes")
@@ -42,8 +45,27 @@ def test_recipe_builder_has_three_panes_and_toolbar() -> None:
     try:
         recipe_tab = app.recipe_tab
         assert hasattr(recipe_tab, "library_frame")
-        assert hasattr(recipe_tab, "timeline")
+        assert hasattr(recipe_tab, "steps_scroll")
+        assert recipe_tab.step_cards
         assert hasattr(recipe_tab, "prop_pump_combo")
         assert recipe_tab.recipe_status_var.get().startswith("1 blocks")
+    finally:
+        app.destroy()
+
+
+def test_recipe_builder_step_card_operations_work() -> None:
+    app = make_app()
+    try:
+        recipe_tab = app.recipe_tab
+        recipe_tab.add_block("wait")
+        assert len(recipe_tab.blocks) == 2
+        assert len(recipe_tab.step_cards) == 2
+        recipe_tab.select_step(1)
+        recipe_tab.move_up()
+        assert recipe_tab.selected_index() == 0
+        recipe_tab.duplicate_selected()
+        assert len(recipe_tab.blocks) == 3
+        recipe_tab.delete_selected()
+        assert len(recipe_tab.blocks) == 2
     finally:
         app.destroy()

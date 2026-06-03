@@ -159,6 +159,15 @@ V3.0では依存を増やさず、Tkinter / ttkのままUIを刷新していま�
 - Calculator: input、result、calculated settings write
 - Recipes: Block Library / Recipe Steps / Inspector の3ペイン構成
 
+V3.1では、同じTkinter / ttk構成のまま視覚品質を調整しています。追加依存はありません。
+
+- カードは重いsolid borderではなく、余白と背景で区切ります。
+- 左ナビはプレースホルダ表記を外し、Dashboard / Pumps / Run / Profiles / Calculator / Recipes に整理しています。
+- OUT disabled時のOUTカードはコンパクト表示になり、COMや操作ボタンは折りたたまれます。
+- Pump / Run / Profiles / Calculatorのボタン文言を整理し、STOP ALLとwrite操作の視認性を上げています。
+- Recipe Builder中央はListboxではなくstep card表示になり、Block Library / Recipe Steps / Inspector の3ペインは維持しています。
+- アイコン差し替えは将来対応予定で、現時点ではテキストのみです。
+
 PumpタブのManual / Jog:
 
 - `Hold forward` / `Hold reverse`: ボタン押下時に `q6h4d` / `q6h5d`、ボタン解放またはボタン外への移動時に `q6h6d`

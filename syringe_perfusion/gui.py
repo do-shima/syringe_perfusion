@@ -170,15 +170,21 @@ class A4PumpApp(tk.Tk):
         ttk.Label(parent, text="A4 Pump", style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 2))
         ttk.Label(parent, text="V3.0", style="Subtitle.TLabel").grid(row=1, column=0, sticky="w", pady=(0, 16))
         items = [
-            ("dashboard", "[Home] Dashboard"),
-            ("pumps", "[Pump] Pumps"),
-            ("run", "[Run] Run"),
-            ("profiles", "[Write] Profiles"),
-            ("calculator", "[Calc] Calculator"),
-            ("recipes", "[Recipe] Recipes"),
+            ("dashboard", "Dashboard"),
+            ("pumps", "Pumps"),
+            ("run", "Run"),
+            ("profiles", "Profiles"),
+            ("calculator", "Calculator"),
+            ("recipes", "Recipes"),
         ]
         for row, (key, text) in enumerate(items, start=2):
-            button = ttk.Button(parent, text=text, style="Sidebar.TButton", command=lambda page=key: self.select_page(page))
+            button = ttk.Button(
+                parent,
+                text=text,
+                style="Nav.TButton",
+                takefocus=False,
+                command=lambda page=key: self.select_page(page),
+            )
             button.grid(row=row, column=0, sticky="ew", pady=3)
             self.nav_buttons[key] = button
         ttk.Separator(parent, orient="horizontal").grid(row=20, column=0, sticky="ew", pady=16)
@@ -203,7 +209,7 @@ class A4PumpApp(tk.Tk):
         self.page_title_var.set(title)
         self.page_subtitle_var.set(subtitle)
         for key, button in self.nav_buttons.items():
-            button.configure(style="SidebarSelected.TButton" if key == page else "Sidebar.TButton")
+            button.configure(style="NavSelected.TButton" if key == page else "Nav.TButton")
         self.set_status(f"Ready - {title}")
 
     def set_status(self, message: str) -> None:
@@ -229,7 +235,7 @@ class A4PumpApp(tk.Tk):
         )
         action_card = create_card(parent, "Quick actions", "Common safety operations.")
         action_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=(0, 12))
-        ttk.Button(action_card, text="[Stop] STOP ALL", style="Danger.TButton", command=self.gui_stop_all_now).grid(
+        ttk.Button(action_card, text="STOP ALL", style="Danger.TButton", takefocus=False, command=self.gui_stop_all_now).grid(
             row=2, column=0, sticky="ew", pady=(10, 0)
         )
         self.update_dashboard()
@@ -261,11 +267,11 @@ class A4PumpApp(tk.Tk):
         ttk.Label(manual, text="Auto stop after ms", style="Card.TLabel").grid(row=2, column=2, sticky="w", padx=4, pady=4)
         ttk.Entry(manual, textvariable=self.hold_auto_stop_ms_var, width=10).grid(row=2, column=3, sticky="ew", padx=4, pady=4)
 
-        hold_forward = ttk.Button(manual, text="[Hold] Forward", style="Accent.TButton")
-        hold_reverse = ttk.Button(manual, text="[Hold] Reverse", style="Accent.TButton")
+        hold_forward = ttk.Button(manual, text="Hold forward", style="Primary.TButton", takefocus=False)
+        hold_reverse = ttk.Button(manual, text="Hold reverse", style="Primary.TButton", takefocus=False)
         hold_forward.grid(row=3, column=0, sticky="ew", padx=4, pady=4)
         hold_reverse.grid(row=3, column=1, sticky="ew", padx=4, pady=4)
-        ttk.Button(manual, text="[Stop] Stop", style="Danger.TButton", command=self.manual_stop_selected).grid(
+        ttk.Button(manual, text="Stop", style="DangerSecondary.TButton", takefocus=False, command=self.manual_stop_selected).grid(
             row=3, column=2, columnspan=2, sticky="ew", padx=4, pady=4
         )
 
@@ -278,8 +284,8 @@ class A4PumpApp(tk.Tk):
 
         ttk.Label(manual, text="Jog duration ms", style="Card.TLabel").grid(row=4, column=0, sticky="w", padx=4, pady=4)
         ttk.Entry(manual, textvariable=self.jog_duration_var, width=10).grid(row=4, column=1, sticky="ew", padx=4, pady=4)
-        jog_forward = ttk.Button(manual, text="[Jog] Forward", style="Secondary.TButton", command=lambda: self.start_jog("forward"))
-        jog_reverse = ttk.Button(manual, text="[Jog] Reverse", style="Secondary.TButton", command=lambda: self.start_jog("reverse"))
+        jog_forward = ttk.Button(manual, text="Jog forward", style="Secondary.TButton", takefocus=False, command=lambda: self.start_jog("forward"))
+        jog_reverse = ttk.Button(manual, text="Jog reverse", style="Secondary.TButton", takefocus=False, command=lambda: self.start_jog("reverse"))
         jog_forward.grid(row=4, column=2, sticky="ew", padx=4, pady=4)
         jog_reverse.grid(row=4, column=3, sticky="ew", padx=4, pady=4)
         self._jog_buttons = [jog_forward, jog_reverse]
@@ -291,7 +297,7 @@ class A4PumpApp(tk.Tk):
         ttk.Checkbutton(safety, text="Dry-run", variable=self.dry_run_var, style="Card.TCheckbutton", command=lambda: self.set_status("Dry-run updated")).grid(
             row=2, column=0, sticky="w", pady=(8, 0)
         )
-        ttk.Button(safety, text="[Stop] STOP ALL", style="Danger.TButton", command=self.gui_stop_all_now).grid(
+        ttk.Button(safety, text="STOP ALL", style="Danger.TButton", takefocus=False, command=self.gui_stop_all_now).grid(
             row=2, column=1, sticky="ew", pady=(8, 0)
         )
         self.pump_log = self._make_log_box(parent, row=3, columnspan=2)
@@ -312,32 +318,50 @@ class A4PumpApp(tk.Tk):
                 style="Card.TCheckbutton",
                 command=lambda: self.set_out_enabled(self.out_enabled_var.get()),
             ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(10, 4))
-        ttk.Label(card, text="COM port", style="Card.TLabel").grid(row=3, column=0, sticky="w", padx=4, pady=4)
+            self.out_disabled_message = ttk.Label(
+                card,
+                text="Enable this pump for push-pull or waste-line operation.",
+                style="Subtitle.TLabel",
+                wraplength=320,
+            )
+            self.out_disabled_message.grid(row=3, column=0, columnspan=3, sticky="w", padx=4, pady=(4, 0))
+            self.out_detail_widgets: list[tk.Widget] = []
+        port_label = ttk.Label(card, text="COM port", style="Card.TLabel")
+        port_label.grid(row=4, column=0, sticky="w", padx=4, pady=4)
         combo = ttk.Combobox(card, textvariable=self.port_vars[pump_key], values=ports)
-        combo.grid(row=3, column=1, columnspan=2, sticky="ew", padx=4, pady=4)
+        combo.grid(row=4, column=1, columnspan=2, sticky="ew", padx=4, pady=4)
         if pump_key == "IN":
             self.in_port_combo = combo
         else:
             self.out_port_combo = combo
-        ttk.Label(card, text="Baudrate", style="Card.TLabel").grid(row=4, column=0, sticky="w", padx=4, pady=4)
-        ttk.Label(card, text="9600", style="Value.TLabel").grid(row=4, column=1, sticky="w", padx=4, pady=4)
-        ttk.Button(card, text="[Test] Connection", style="Secondary.TButton", command=self.connection_test).grid(
-            row=5, column=0, columnspan=3, sticky="ew", padx=4, pady=(8, 4)
+            self.out_detail_widgets.extend([port_label, combo])
+        baud_label = ttk.Label(card, text="Baudrate", style="Card.TLabel")
+        baud_label.grid(row=5, column=0, sticky="w", padx=4, pady=4)
+        baud_value = ttk.Label(card, text="9600", style="Value.TLabel")
+        baud_value.grid(row=5, column=1, sticky="w", padx=4, pady=4)
+        test_button = ttk.Button(card, text="Connection test", style="Secondary.TButton", takefocus=False, command=self.connection_test)
+        test_button.grid(
+            row=6, column=0, columnspan=3, sticky="ew", padx=4, pady=(8, 4)
         )
+        if pump_key == "OUT":
+            self.out_detail_widgets.extend([baud_label, baud_value, test_button])
         if pump_key == "IN":
-            ttk.Button(card, text="[Run] Start forward", style="Accent.TButton", command=lambda: self.run_thread(self.gui_send, "IN", "start-forward")).grid(
-                row=6, column=0, sticky="ew", padx=4, pady=4
+            ttk.Button(card, text="Start forward", style="Primary.TButton", takefocus=False, command=lambda: self.run_thread(self.gui_send, "IN", "start-forward")).grid(
+                row=7, column=0, sticky="ew", padx=4, pady=4
             )
-            ttk.Button(card, text="[Stop] Stop", style="Danger.TButton", command=lambda: self.run_thread(self.gui_send, "IN", "stop")).grid(
-                row=6, column=1, columnspan=2, sticky="ew", padx=4, pady=4
+            ttk.Button(card, text="Stop", style="DangerSecondary.TButton", takefocus=False, command=lambda: self.run_thread(self.gui_send, "IN", "stop")).grid(
+                row=7, column=1, columnspan=2, sticky="ew", padx=4, pady=4
             )
         else:
-            self.out_start_forward_button = ttk.Button(card, text="[Run] Start forward", style="Accent.TButton", command=lambda: self.run_thread(self.gui_send, "OUT", "start-forward"))
-            self.out_start_forward_button.grid(row=6, column=0, sticky="ew", padx=4, pady=4)
-            self.out_start_reverse_button = ttk.Button(card, text="[Run] Start reverse", style="Accent.TButton", command=lambda: self.run_thread(self.gui_send, "OUT", "start-reverse"))
-            self.out_start_reverse_button.grid(row=6, column=1, sticky="ew", padx=4, pady=4)
-            self.out_stop_button = ttk.Button(card, text="[Stop] Stop", style="Danger.TButton", command=lambda: self.run_thread(self.gui_send, "OUT", "stop"))
-            self.out_stop_button.grid(row=6, column=2, sticky="ew", padx=4, pady=4)
+            self.out_start_forward_button = ttk.Button(card, text="Start forward", style="Primary.TButton", takefocus=False, command=lambda: self.run_thread(self.gui_send, "OUT", "start-forward"))
+            self.out_start_forward_button.grid(row=7, column=0, sticky="ew", padx=4, pady=4)
+            self.out_start_reverse_button = ttk.Button(card, text="Start reverse", style="Primary.TButton", takefocus=False, command=lambda: self.run_thread(self.gui_send, "OUT", "start-reverse"))
+            self.out_start_reverse_button.grid(row=7, column=1, sticky="ew", padx=4, pady=4)
+            self.out_stop_button = ttk.Button(card, text="Stop", style="DangerSecondary.TButton", takefocus=False, command=lambda: self.run_thread(self.gui_send, "OUT", "stop"))
+            self.out_stop_button.grid(row=7, column=2, sticky="ew", padx=4, pady=4)
+            self.out_detail_widgets.extend(
+                [self.out_start_forward_button, self.out_start_reverse_button, self.out_stop_button]
+            )
         return card
 
     def _build_calc_tab(self, parent: ttk.Frame) -> None:
@@ -378,7 +402,7 @@ class A4PumpApp(tk.Tk):
             ttk.Label(input_card, text=label, style="Card.TLabel").grid(row=idx, column=0, sticky="w", pady=4)
             ttk.Entry(input_card, textvariable=var).grid(row=idx, column=1, sticky="ew", pady=4)
 
-        ttk.Button(input_card, text="[Calc] Calculate", style="Accent.TButton", command=self.calculate_gui).grid(
+        ttk.Button(input_card, text="Calculate", style="Primary.TButton", takefocus=False, command=self.calculate_gui).grid(
             row=9, column=0, columnspan=2, sticky="ew", pady=(10, 0)
         )
         ttk.Label(result_card, textvariable=self.calc_result_var, justify="left", style="Value.TLabel").grid(
@@ -400,9 +424,17 @@ class A4PumpApp(tk.Tk):
         ttk.Checkbutton(calc_write, text="Save after write", variable=self.calc_save_after_write_var, style="Card.TCheckbutton").grid(
             row=2, column=2, sticky="w", padx=4, pady=4
         )
-        ttk.Button(calc_write, text="[Write] Write calculated settings to A4", style="Success.TButton", command=self.write_calculated_settings_gui).grid(
+        self.calc_write_button = ttk.Button(
+            calc_write,
+            text="Write calculated settings to A4",
+            style="Success.TButton",
+            takefocus=False,
+            command=self.write_calculated_settings_gui,
+        )
+        self.calc_write_button.grid(
             row=2, column=3, sticky="ew", padx=4, pady=4
         )
+        self.calc_write_button.configure(state="disabled")
 
     def _build_profile_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
@@ -442,13 +474,19 @@ class A4PumpApp(tk.Tk):
         ttk.Checkbutton(write_frame, text="Start after write", variable=self.profile_start_after_write_var, style="Card.TCheckbutton").grid(
             row=2, column=3, sticky="w", padx=4, pady=4
         )
+        ttk.Label(
+            write_frame,
+            text="Only starts the pump after settings are written.",
+            style="Subtitle.TLabel",
+        ).grid(row=3, column=0, columnspan=4, sticky="w", padx=4, pady=(0, 4))
         self.profile_write_button = ttk.Button(
             write_frame,
-            text="[Write] Write settings to A4",
+            text="Write settings to A4",
             style="Success.TButton",
+            takefocus=False,
             command=self.write_profile_settings_gui,
         )
-        self.profile_write_button.grid(row=3, column=0, columnspan=4, sticky="ew", padx=4, pady=(8, 4))
+        self.profile_write_button.grid(row=4, column=0, columnspan=4, sticky="ew", padx=4, pady=(8, 4))
         self.profile_log = self._make_log_box(parent, row=2, columnspan=2)
 
     def _build_run_tab(self, parent: ttk.Frame) -> None:
@@ -487,17 +525,29 @@ class A4PumpApp(tk.Tk):
         actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 12))
         actions.columnconfigure(0, weight=1)
         actions.columnconfigure(1, weight=1)
-        ttk.Button(actions, text="[Run] Start", style="Accent.TButton", command=lambda: self.run_thread(self.start_run_mode)).grid(
+        ttk.Button(actions, text="Start", style="Primary.TButton", takefocus=False, command=lambda: self.run_thread(self.start_run_mode)).grid(
             row=2, column=0, sticky="ew", padx=(0, 6), pady=(8, 0)
         )
-        ttk.Button(actions, text="[Stop] STOP ALL", style="Danger.TButton", command=self.gui_stop_all_now).grid(
+        ttk.Button(actions, text="STOP ALL", style="Danger.TButton", takefocus=False, command=self.gui_stop_all_now).grid(
             row=2, column=1, sticky="ew", padx=(6, 0), pady=(8, 0)
         )
         self.run_log = self._make_log_box(parent, row=2, columnspan=2)
 
     def _make_log_box(self, parent: ttk.Frame, *, row: int, columnspan: int) -> tk.Text:
         parent.rowconfigure(row, weight=1)
-        box = tk.Text(parent, height=12, wrap="word")
+        box = tk.Text(
+            parent,
+            height=10,
+            wrap="word",
+            font=("Consolas", 9),
+            background="#FFFFFF",
+            foreground="#111827",
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground="#E5E7EB",
+            padx=8,
+            pady=6,
+        )
         box.grid(row=row, column=0, columnspan=columnspan, sticky="nsew", pady=8)
         return box
 
@@ -558,8 +608,16 @@ class A4PumpApp(tk.Tk):
             widget = getattr(self, widget_name, None)
             if widget is not None:
                 widget.configure(state="readonly" if enabled else "disabled")
-        if hasattr(self, "out_card"):
-            self.out_card.configure(style="Card.TFrame")
+        for widget in getattr(self, "out_detail_widgets", []):
+            if enabled:
+                widget.grid()
+            else:
+                widget.grid_remove()
+        if hasattr(self, "out_disabled_message"):
+            if enabled:
+                self.out_disabled_message.grid_remove()
+            else:
+                self.out_disabled_message.grid()
 
     def update_run_mode_options(self) -> None:
         modes = RUN_MODES if self.is_pump_enabled("OUT") else ["IN only"]
@@ -771,6 +829,8 @@ class A4PumpApp(tk.Tk):
             )
             self.last_calc_result = result_to_dict(result)
             self.calc_result_var.set(self.format_result(self.last_calc_result))
+            if hasattr(self, "calc_write_button"):
+                self.calc_write_button.configure(state="normal")
             self.set_status("Calculation updated")
         except Exception as exc:
             messagebox.showerror("Calculation failed", str(exc))
@@ -813,7 +873,12 @@ class A4PumpApp(tk.Tk):
         commands = format_settings_commands(calc.speed_mm_min, calc.duration_s, save=save)
         if start_after_write:
             commands.append("q6h3d" if profile.get("direction", "forward") == "reverse" else "q6h2d")
-        if confirm and not self.confirm_settings_write(calc.speed_mm_min, calc.duration_s, commands):
+        if confirm and not self.confirm_settings_write(
+            calc.speed_mm_min,
+            calc.duration_s,
+            commands,
+            start_after_write=start_after_write,
+        ):
             return None
         results = write_profile(
             self.data,
@@ -858,19 +923,31 @@ class A4PumpApp(tk.Tk):
         self.set_status("Calculated settings write completed")
         return results
 
-    def confirm_settings_write(self, speed_mm_min: float, duration_s: float, commands: list[str]) -> bool:
+    def confirm_settings_write(
+        self,
+        speed_mm_min: float,
+        duration_s: float,
+        commands: list[str],
+        *,
+        start_after_write: bool = False,
+    ) -> bool:
         seconds = int(round(duration_s))
         hours = seconds // 3600
         minutes = (seconds % 3600) // 60
         secs = seconds % 60
-        text = "\n".join(
+        lines = []
+        if start_after_write:
+            lines.extend(["WARNING: Start after write is ON.", ""])
+        lines.extend(
             [
-                f"speed {speed_mm_min:.2f} mm/min",
-                f"time {hours:02d}:{minutes:02d}:{secs:02d}",
-                "commands:",
+                f"Speed: {speed_mm_min:.2f} mm/min",
+                f"Time:  {hours:02d}:{minutes:02d}:{secs:02d}",
+                "",
+                "Commands:",
                 *[f"  {command}" for command in commands],
             ]
         )
+        text = "\n".join(lines)
         return messagebox.askokcancel("Write settings to A4", text)
 
     def gui_send(self, pump_key: str, action: str) -> None:
