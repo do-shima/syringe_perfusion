@@ -150,6 +150,15 @@ GUIには5つのタブがあります。
 
 GUI操作も `logs/a4pump_YYYYMMDD.csv` に記録されます。
 
+V3.0では依存を増やさず、Tkinter / ttkのままUIを刷新しています。`clam` themeベースのcustom Styleを使い、左ナビゲーション + 右コンテンツの構成にしています。内部実装ではページ管理にNotebookを使っていますが、直接タブを操作するのではなく左ナビから切り替えます。
+
+- Dashboard: 接続状態、dry-run状態、STOP ALL
+- Pumps: IN/OUTカード、COM port、connection test、manual hold、jog、STOP ALL
+- Run: run mode、profile/timing、Start、STOP ALL
+- Profiles: profile preview、A4書き込み、Start after write
+- Calculator: input、result、calculated settings write
+- Recipes: Block Library / Recipe Steps / Inspector の3ペイン構成
+
 PumpタブのManual / Jog:
 
 - `Hold forward` / `Hold reverse`: ボタン押下時に `q6h4d` / `q6h5d`、ボタン解放またはボタン外への移動時に `q6h6d`
