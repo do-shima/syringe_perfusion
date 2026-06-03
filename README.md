@@ -1,217 +1,79 @@
-# A4シリンジポンプ制御プロジェクト
+# A4 Syringe Pump Control
 
-## 概要
+Version: V3.2  
+GUI: Tkinter/ttk + clam theme + custom Style  
+Control: USB-TTL UART  
+Distribution: PyInstaller one-folder  
+Dependencies: Python + pyserial for source run; no Python needed for built app
 
-USB仮想COM経由でA4シリンジポンプ1台または2台を制御するPythonプロジェクトです。V2.1では、A4本体への速度・時間書き込み、保存済み条件の開始・停止、manual hold、manual jogを扱えます。
+## Overview
 
-GUIは `tkinter`、シリアル通信は `pyserial`、設定はJSONです。Nikon/NIS-Elementsから呼び出すためのCLIと、手動操作用GUIを分けています。
+A4/QHZS系シリンジポンプをUSB-TTL UART経由で制御するための軽量Pythonアプリです。V3.2では、1台運用を標準にしたGUI、manual hold、bounded jog、速度・時間設定のA4本体書き込み、プロファイル実行、Recipe Builder、CSVログ、アプリアイコン/ロゴアセット管理、PyInstaller配布をサポートします。
 
-## A4接続
+研究室内の顕微鏡PCや実験用Windows PCで、追加GUI依存を増やさずに動かすことを前提にしています。
 
-- 通信速度: `9600 baud`
-- 開始 前進: `q6h2d`
-- 開始 後退: `q6h3d`
-- manual forward: `q6h4d`
-- manual reverse: `q6h5d`
-- 停止/緊急停止: `q6h6d`
-- 速度整数部: `q1hxxd`
-- 速度小数部: `q2hxxd`
-- 時: `q3hHHd`
-- 分: `q4hMMd`
-- 秒: `q5hSSd`
-- パラメータ保存: `q6h1d`
-- コマンド末尾: CRLF (`\r\n`)
+## Key Features
 
-GUIとCLIは、送信時にCOMポートを開いてすぐ閉じます。これによりGUIとNIS呼び出しCLIがCOMポートを奪い合いにくくなります。
+- OUTポンプを任意に有効化できるSingle-pump mode
+- 自動停止を伴うManual hold forward/reverse
+- 指定時間だけ動かして必ず停止するBounded jog
+- A4本体への速度・時間設定書き込み
+- Terumo SS-05LZ 5 mL Luer-lock用Fast-30 profile
+- Step cardsとvalidationを備えたRecipe Builder
+- 実機なしでコマンド確認できるDry-run mode
+- live / dry-run両方を残すCSV logging
+- PyInstaller one-folder Windows app build
+- 画像が無くても落ちないicon / logo asset loading
 
-## COMポート確認
+## Hardware Connection
 
-```powershell
-python -m syringe_perfusion.cli list-ports
+A4 controller connector:
+
+```text
+T R G V
 ```
 
-表示されたCOMポートを `config/pumps.json` の `IN` / `OUT` に設定します。
+Connection:
 
-## 設定ファイル
-
-設定は `config/` 以下にあります。
-
-- `pumps.json`: ポンプ名、COMポート、baudrate、terminator、A4コマンド
-- `syringes.json`: シリンジ径、校正済み `uL/mm`
-- `profiles.json`: Fast-30などの運転条件
-- `recipes.json`: 複数ポンプ動作の手順
-
-PyInstallerでone-folder化した場合も、実行ファイル階層または同梱された `config/` を参照します。
-
-## Single Pump Mode
-
-`config/pumps.json` またはGUIのPumpタブでOUTポンプを無効化できます。OUT disabledではINだけが有効になり、OUT COM portは空欄で構いません。
-
-- OUT disabled: `IN only` のみ実行可能
-- OUT disabled: OUT操作、`OUT only`、`Push-pull`、`Two forward`、Recipe内OUTブロックは無効またはエラー
-- OUT enabled: OUT COM portが必須
-- `STOP ALL` はdisabledポンプをスキップします
-
-## Fast-30条件
-
-本命プロファイルは `fast30_1ml` です。
-
-- 5 mL Terumo SS-05LZ Luer-lock syringe
-- 15.37 mm/min
-- 30 sec
-- 実測: 1.001, 1.007, 0.994, 1.000, 1.007 g
-- 平均: 約1.002 g
-
-主ライン:
-
-- A4 syringe pump
-- 5 mL Luer-lock syringe
-- R1-FL three-way stopcock
-- SF-ET1020L22 extension tube
-- BNG-18L bent needle
-- LX-D35 holder
-- 35 mm dish
-
-## CLI使用例
-
-ヘルプ:
-
-```powershell
-python -m syringe_perfusion.cli --help
+```text
+A4 T -> USB-TTL RXD
+A4 R -> USB-TTL TXD
+A4 G -> USB-TTL GND
+A4 V -> not connected
 ```
 
-計算:
+Important:
 
-```powershell
-python -m syringe_perfusion.cli calc --syringe terumo_ss05lz_5ml --volume-ul 1000 --duration-s 30
-```
+- A4 `V` must not be connected to 3.3 V or 5 V.
+- A4本体は通常の12 V電源で動かします。
+- USB-TTL変換器はCP2102N、CH340Gなどを使います。
+- USB-RS232変換器やUSB D+/D-直結ケーブルは使いません。
 
-INポンプを前進開始:
+## Communication Protocol
 
-```powershell
-python -m syringe_perfusion.cli send --pump IN --action start-forward --dish-id Dish001 --condition StimA --trigger-source Manual
-```
+実機では小文字ASCIIコマンドで動作確認済みです。大文字コマンドではなく、小文字で送信してください。
 
-Manual操作:
+- Baudrate: 9600
+- Data format: 8N1
+- Flow control: none
+- Terminator: CRLF (`\r\n`)
+- Encoding: ASCII lowercase commands
 
-```powershell
-python -m syringe_perfusion.cli send --pump IN --action manual-forward
-python -m syringe_perfusion.cli send --pump IN --action manual-reverse
-python -m syringe_perfusion.cli send --pump IN --action stop
-```
+| Command | Meaning |
+| --- | --- |
+| `q6h2d` | auto forward |
+| `q6h3d` | auto reverse |
+| `q6h4d` | manual forward |
+| `q6h5d` | manual reverse |
+| `q6h6d` | stop |
+| `q1hxxd` | speed integer |
+| `q2hxxd` | speed decimal |
+| `q3hHHd` | hour |
+| `q4hMMd` | minute |
+| `q5hSSd` | second |
+| `q6h1d` | save |
 
-Jog操作:
-
-```powershell
-python -m syringe_perfusion.cli jog --pump IN --direction forward --duration-ms 1000
-python -m syringe_perfusion.cli jog --pump IN --direction reverse --duration-ms 1000
-```
-
-A4へ速度・時間を書き込む:
-
-```powershell
-python -m syringe_perfusion.cli write-settings --pump IN --speed-mm-min 15.37 --duration-s 30 --save
-python -m syringe_perfusion.cli write-profile --pump IN --profile fast30_1ml --save
-```
-
-`write-profile` はデフォルトでは書き込みと保存のみで、ポンプを開始しません。明示的に開始する場合だけ `--start-after-write` を付けます。
-
-保存済みA4条件をFast-30として開始し、ログに条件情報を残す:
-
-```powershell
-python -m syringe_perfusion.cli run-profile --pump IN --profile fast30_1ml --dish-id Dish001 --condition StimA --trigger-source NIS
-```
-
-Push-pull:
-
-```powershell
-python -m syringe_perfusion.cli pushpull --in-pump IN --out-pump OUT --profile-in fast30_1ml --profile-out drain30_1ml --out-delay 0.5 --dish-id Dish001 --condition StimA --trigger-source NIS
-```
-
-緊急停止:
-
-```powershell
-python -m syringe_perfusion.cli stop-all
-```
-
-## GUI使用例
-
-```powershell
-python run_gui.py
-```
-
-GUIには5つのタブがあります。
-
-- Pump: COMポート、dry-run、開始/停止、Manual / Jog、STOP ALL
-- Syringe / Calculator: シリンジ選択、速度・時間・体積計算、計算結果のA4書き込み
-- Profile: Fast-30、Fast-20、Gentle-60、Gentle-120、Drain-30の確認とA4書き込み
-- Run: Dish ID、Condition、Trigger source、IN only、OUT only、Push-pull、Two forward
-- Recipe Builder: V2レシピの作成、dry-run、実行
-
-GUI操作も `logs/a4pump_YYYYMMDD.csv` に記録されます。
-
-V3.0では依存を増やさず、Tkinter / ttkのままUIを刷新しています。`clam` themeベースのcustom Styleを使い、左ナビゲーション + 右コンテンツの構成にしています。内部実装ではページ管理にNotebookを使っていますが、直接タブを操作するのではなく左ナビから切り替えます。
-
-- Dashboard: 接続状態、dry-run状態、STOP ALL
-- Pumps: IN/OUTカード、COM port、connection test、manual hold、jog、STOP ALL
-- Run: run mode、profile/timing、Start、STOP ALL
-- Profiles: profile preview、A4書き込み、Start after write
-- Calculator: input、result、calculated settings write
-- Recipes: Block Library / Recipe Steps / Inspector の3ペイン構成
-
-V3.1では、同じTkinter / ttk構成のまま視覚品質を調整しています。追加依存はありません。
-
-- カードは重いsolid borderではなく、余白と背景で区切ります。
-- 左ナビはプレースホルダ表記を外し、Dashboard / Pumps / Run / Profiles / Calculator / Recipes に整理しています。
-- OUT disabled時のOUTカードはコンパクト表示になり、COMや操作ボタンは折りたたまれます。
-- Pump / Run / Profiles / Calculatorのボタン文言を整理し、STOP ALLとwrite操作の視認性を上げています。
-- Recipe Builder中央はListboxではなくstep card表示になり、Block Library / Recipe Steps / Inspector の3ペインは維持しています。
-- アイコン差し替えは将来対応予定で、現時点ではテキストのみです。
-
-## Application icon
-
-V3.2では、アプリアイコンとロゴ画像を `assets/` から読み込む構造を追加しています。画像が未配置でもGUIはそのまま起動します。
-
-App icon design guidance:
-
-- アイコン内に文字を入れない
-- labels、percentages、tiny buttons、小さな英数字は避ける
-- simplified syringe pump silhouetteを使う
-- master imageは `1024x1024` 推奨
-- 小サイズ、特に `32x32` で判別できる太い形にする
-- PNG exportsは `assets/icons/` に置く
-- large logoは `assets/logo/` に置く
-- PyInstallerは `assets/icons/app.ico` が存在する場合だけ `--icon` に使う
-
-Recommended files:
-
-- `assets/icons/app_icon_16.png`
-- `assets/icons/app_icon_32.png`
-- `assets/icons/app_icon_48.png`
-- `assets/icons/app_icon_64.png`
-- `assets/icons/app_icon_128.png`
-- `assets/icons/app_icon_256.png`
-- `assets/icons/app_icon_512.png`
-- `assets/icons/app.ico`
-- `assets/logo/app_logo_512.png`
-- `assets/logo/app_logo_1024.png`
-
-PumpタブのManual / Jog:
-
-- `Hold forward` / `Hold reverse`: ボタン押下時に `q6h4d` / `q6h5d`、ボタン解放またはボタン外への移動時に `q6h6d`
-- `Stop`: 選択中ポンプに `q6h6d`
-- `Jog forward` / `Jog reverse`: 指定msだけ `q6h4d` / `q6h5d` を送り、自動で `q6h6d`
-- `Auto stop after ms`: Hold-to-runの保険停止タイマー
-- Escキー: `STOP ALL`
-
-初回はシリンジなし、または空シリンジで確認してください。実液体ラインでは、manual操作前に針位置、廃液ライン、閉塞がないことを確認してください。
-
-ProfileタブのWrite settings:
-
-- Target pumpは有効なポンプだけを選択できます
-- デフォルトはwrite + saveで、モーターは開始しません
-- `Start after write` をONにした場合だけ、profile directionに応じて `q6h2d` または `q6h3d` を送ります
-- Fast-30例: 15.37 mm/min、30 s
+Example settings for speed 15.37 mm/min and duration 30 sec:
 
 ```text
 q1h15d
@@ -222,201 +84,256 @@ q5h30d
 q6h1d
 ```
 
-## Nikon/NISから呼ぶ例
+## Installation from Source
 
-PyInstallerで作成した `a4ctl.exe` をNIS-Elements側から呼び出します。
-
-```powershell
-a4ctl.exe run-profile --pump IN --profile fast30_1ml --dish-id Dish001 --condition StimA --trigger-source NIS
-```
-
-または:
+PowerShell:
 
 ```powershell
-a4ctl.exe pushpull --in-pump IN --out-pump OUT --profile-in fast30_1ml --profile-out drain30_1ml --out-delay 0.5 --dish-id Dish001 --condition StimA --trigger-source NIS
+python -m pip install -r requirements.txt
+python -m pytest
+python run_gui.py
 ```
 
-V2レシピを呼ぶ場合:
+CLIもsource runできます。
 
 ```powershell
-a4ctl.exe run-recipe --recipe recipes\pushpull_fast30.json --dish-id Dish001 --condition StimA --trigger-source NIS --assume-yes
+python -m syringe_perfusion.cli --help
 ```
 
-## V2 Recipe Builder
+## Windows App Build
 
-V2では、ブロックを縦に並べる方式のレシピビルダーを追加しています。Tkinter / ttkのみで実装しており、Qt、Electron、WebView、Blockly本体は使いません。ドラッグ＆ドロップではなく、`Move up` / `Move down` で順序を変更します。
-
-利用できるブロック:
-
-- `pump_start`: `IN` / `OUT` に `start_forward` または `start_reverse` を送信
-- `pump_stop`: 指定ポンプに `q6h6d`
-- `manual_jog`: `IN` / `OUT` に `q6h4d` または `q6h5d` を送り、指定ms後に `q6h6d`
-- `stop_all`: 全ポンプに `q6h6d`
-- `wait`: 指定秒数待つ
-- `log_marker`: ハードウェア操作なしでログだけ記録
-- `prompt_check`: GUIでは確認ダイアログ、CLIでは `--assume-yes` がない場合に標準入力で確認
-
-GUIでは `Recipe Builder` タブからブロック追加、編集、上下移動、複製、削除、保存、読み込み、dry-run、実行ができます。Run前にはRecipe previewとチェックリストを表示します。OUT reverse / `start_reverse` を含む場合は警告を表示します。
-
-## レシピJSON形式
-
-レシピは `recipes/` にJSONとして保存します。
-
-```json
-{
-  "schema_version": 2,
-  "recipe_id": "pushpull_fast30_v1",
-  "display_name": "Push-pull Fast-30",
-  "description": "",
-  "blocks": [
-    {
-      "id": "b001",
-      "type": "pump_start",
-      "pump": "IN",
-      "action": "start_forward",
-      "profile": "fast30_1ml",
-      "note": "Stimulus injection"
-    },
-    {
-      "id": "b002",
-      "type": "wait",
-      "duration_s": 0.5
-    },
-    {
-      "id": "b003",
-      "type": "pump_start",
-      "pump": "OUT",
-      "action": "start_reverse",
-      "profile": "drain30_1ml",
-      "note": "Waste suction"
-    },
-    {
-      "id": "b004a",
-      "type": "manual_jog",
-      "pump": "IN",
-      "direction": "forward",
-      "duration_ms": 1000,
-      "note": "Bounded manual jog"
-    },
-    {
-      "id": "b004",
-      "type": "wait",
-      "duration_s": 35.0
-    },
-    {
-      "id": "b005",
-      "type": "stop_all",
-      "note": "Safety stop"
-    }
-  ]
-}
-```
-
-同梱サンプル:
-
-- `recipes/in_fast30.json`
-- `recipes/pushpull_fast30.json`
-
-## V2 CLI
-
-レシピ一覧:
-
-```powershell
-python -m syringe_perfusion.cli list-recipes
-```
-
-レシピ検証:
-
-```powershell
-python -m syringe_perfusion.cli validate-recipe --recipe recipes/pushpull_fast30.json
-```
-
-dry-run:
-
-```powershell
-python -m syringe_perfusion.cli run-recipe --recipe recipes/pushpull_fast30.json --dish-id Dish001 --condition StimA --trigger-source NIS --dry-run
-```
-
-実行:
-
-```powershell
-python -m syringe_perfusion.cli run-recipe --recipe recipes/pushpull_fast30.json --dish-id Dish001 --condition StimA --trigger-source NIS --assume-yes
-```
-
-`prompt_check` ブロックがある場合、`--assume-yes` を付けないCLI実行では標準入力で確認します。dry-runでは確認を省略します。
-
-## GUIでのレシピ作成手順
-
-1. `python run_gui.py` を起動します。
-2. `Recipe Builder` タブを開きます。
-3. 左のBlock paletteからブロックを追加します。
-4. 中央のRecipe timelineでブロックを選択します。
-5. 右のProperties editorで `pump`、`action`、`profile`、`duration_s`、`message`、`note` を編集し、`Apply changes` を押します。
-6. `Move up` / `Move down` で順序を調整します。
-7. `Dry-run` でログと実行順を確認します。
-8. 実機実行前にRecipe previewとチェックリストを確認します。
-
-## Safety stop
-
-`STOP ALL` は確認ダイアログなしで即時実行します。Recipe BuilderタブではEscキーでも `STOP ALL` を呼びます。レシピ実行中に例外が出た場合、可能な範囲で全ポンプ停止を試みます。GUIはCOMポートを開きっぱなしにせず、送信時に開いて閉じます。
-
-V2ログでは既存CSVに次の列を追加しています。
-
-- `started_at`
-- `ended_at`
-- `recipe_id`
-- `block_id`
-- `block_type`
-- `relative_time_s`
-- `block_index`
-- `mode`
-- `jog_duration_ms`
-- `response_hex`
-
-## dry-run
-
-実機なしでログとコマンドを確認できます。
-
-```powershell
-python -m syringe_perfusion.cli run-profile --pump IN --profile fast30_1ml --dry-run
-```
-
-dry-runではCOMポートを開かず、応答は `DRY_RUN` になります。
-
-## PyInstallerでのビルド
-
-one-folder形式でGUIとCLIを作成します。
+PyInstaller one-folder build:
 
 ```powershell
 scripts\build_windows.bat
 ```
 
-内部では次を実行します。
+Generated applications:
 
-```powershell
-pyinstaller --onedir --name A4PumpGUI --add-data "config;config" run_gui.py
-pyinstaller --onedir --name a4ctl --add-data "config;config" run_cli.py
+```text
+dist\A4PumpGUI\A4PumpGUI.exe
+dist\a4ctl\a4ctl.exe
 ```
 
-one-fileではなくone-folderを優先します。共用PCでトラブルが少なく、`config/` と `logs/` を扱いやすく、DLL展開の問題を避けやすいためです。
+Notes:
 
-## トラブルシューティング
+- `A4PumpGUI.exe` はGUI版です。
+- `a4ctl.exe` はCLI版です。
+- `pathlib` backport packageが入っているとPyInstallerが失敗することがあります。その場合は `pip uninstall pathlib` または `conda remove pathlib` で削除してください。
+- `build/`, `dist/`, `*.spec` はbuild outputなのでGit管理対象にしません。
 
-- `pyserial is required`: `pip install -r requirements.txt` を実行してください。
-- COMポートが開けない: A4の電源、USB接続、デバイスマネージャーのCOM番号、他アプリがポートを掴んでいないかを確認してください。
-- A4が反応しない: A4電源、COMポート、9600 baud / 8N1 / no flow control、CRLF終端を確認してください。
-- OUT後退が期待通りでない: `q6h3d` / `q6h5d` は必ず水または色素で流向を確認してください。
-- ログが見つからない: 通常実行ではプロジェクトの `logs/`、exe化後は実行ファイル階層の `logs/` を確認してください。
+## Quick Start: GUI
 
-## A4速度・時間コマンド
+Launch:
 
-V2.1では以下の確認済み小文字コマンドを使って速度・時間を書き込みます。
+```powershell
+python run_gui.py
+```
 
-- `q1hxxd` 速度整数部
-- `q2hxxd` 速度小数部
-- `q3hxxd` 時
-- `q4hxxd` 分
-- `q5hxxd` 秒
-- `q6h1d` 保存
+Built app:
 
-Profileタブ、Calculatorタブ、CLIの `write-settings` / `write-profile` から速度・時間を書き込めます。RunタブのStartは従来通り、保存済み設定を開始します。
+```powershell
+dist\A4PumpGUI\A4PumpGUI.exe
+```
+
+Pages:
+
+- Dashboard: app status、connection summary、quick actions、safety statusを確認します。
+- Pumps: IN/OUT pump settings、OUT enable/disable、connection test、manual hold、jog、STOP ALLを扱います。
+- Run: 保存済みA4設定をIN onlyで開始します。OUT enabled時はOUT only、Push-pull、Two forwardも使えます。
+- Profiles: profileを選び、計算済みspeed/timeをpreviewし、A4へwriteします。必要な場合だけstart after writeを使います。
+- Calculator: speed/timeを計算し、計算結果をA4へwriteします。
+- Recipes: Block Library、Recipe Steps、Inspectorの3ペインRecipe Builderです。
+
+Manual holdは、ボタン押下中に `q6h4d` または `q6h5d` を送り、ボタン解放、カーソル離脱、auto-stop timeout、stop操作で `q6h6d` を送ります。Jogは指定msだけmanual forward/reverseを実行し、その後stopを送ります。
+
+GUIでは `Esc` でSTOP ALLを送ります。
+
+## Quick Start: CLI
+
+Serial port一覧:
+
+```powershell
+python -m syringe_perfusion.cli list-ports
+```
+
+Manual forwardとstop:
+
+```powershell
+python -m syringe_perfusion.cli send --pump IN --action manual-forward
+python -m syringe_perfusion.cli send --pump IN --action stop
+```
+
+500 msのJog forward:
+
+```powershell
+python -m syringe_perfusion.cli jog --pump IN --direction forward --duration-ms 500
+```
+
+Fast-30 settingsを書き込む:
+
+```powershell
+python -m syringe_perfusion.cli write-profile --pump IN --profile fast30_1ml --save
+```
+
+保存済みprofileを開始:
+
+```powershell
+python -m syringe_perfusion.cli run-profile --pump IN --profile fast30_1ml
+```
+
+有効な全pumpを停止:
+
+```powershell
+python -m syringe_perfusion.cli stop-all
+```
+
+`--dry-run` を付けると、serial portを開かずにoutgoing commandsを確認できます。
+
+## Fast-30 Profile
+
+Fast-30は、確認済みシリンジで1 mL / 30 secを狙うreference profileです。
+
+- Syringe: Terumo SS-05LZ 5 mL Luer-lock
+- Speed: 15.37 mm/min
+- Duration: 30 sec
+- Measured mass: 1.001, 1.007, 0.994, 1.000, 1.007 g
+- Average: about 1.002 g
+
+このprofileのsettings write commands:
+
+```text
+q1h15d
+q2h37d
+q3h00d
+q4h00d
+q5h30d
+q6h1d
+```
+
+Profile writingはデフォルトではpumpを開始しません。GUIでは `Start after write`、CLIでは `--start-after-write` を使えますが、明示的に開始したい場合だけ使ってください。
+
+## Single-Pump and OUT Pump Mode
+
+GUIはINだけを有効にしたsingle-pump operationをサポートします。
+
+- OUT disabledは1台運用の標準的なmodeです。
+- OUT disabledではOUT COM portは空欄で構いません。
+- OUT enabledではOUT COM portが必須です。
+- OUT only、Push-pull、Two forwardはOUT enabled時だけ使えます。
+- Recipe Builderはdry-run / run前にdisabled pumpの使用を検出します。
+
+Pump enable stateは `config/pumps.json` に保存され、Pumps pageからも変更できます。
+
+## Recipe Builder
+
+V3.2 Recipe Builderは3ペイン構成です。
+
+- Block Library: recipe blockを追加します。
+- Recipe Steps: card-style step listで手順を確認します。
+- Inspector: selected blockを編集し、validation messagesを確認します。
+
+対応操作:
+
+- Add block
+- Select and edit block
+- Move Up / Down
+- Duplicate
+- Delete
+- Validate
+- Dry-run
+- Run
+
+Available block types:
+
+- `pump_start`
+- `pump_stop`
+- `manual_jog`
+- `stop_all`
+- `wait`
+- `log_marker`
+- `prompt_check`
+
+OUT disabled時にOUTを使うrecipeは、実行前のvalidationでエラーになります。
+
+## Logging
+
+Command logsは次に保存されます。
+
+```text
+logs/a4pump_YYYYMMDD.csv
+```
+
+Dry-run commandsもログに残ります。重要な列:
+
+```text
+timestamp, pump, port, command, outgoing_hex, response, mode,
+profile, speed_mm_min, duration_s, recipe_id, block_id
+```
+
+ログは実験時のcommand historyとdry-run verificationを残すためのものです。
+
+## Application Icon and Assets
+
+V3.2ではapplication iconとlogoのstatic asset loadingを追加しています。
+
+```text
+assets/
+  icons/
+  logo/
+```
+
+画像が無い場合もappは安全に無視して起動します。PNG icon/logoが存在すればGUIが読み込みます。PyInstaller buildでは `assets` directoryを同梱し、`assets/icons/app.ico` が存在する場合だけexecutable iconとして使います。
+
+Recommended app icon direction:
+
+- No text, letters, numbers, labels, or tiny UI details.
+- Use a simplified syringe pump silhouette.
+- Use a high-contrast design that remains recognizable at 32 x 32 px.
+- Recommended master size: 1024 x 1024.
+- Export PNG sizes under `assets/icons/` and a Windows ICO as `assets/icons/app.ico`.
+- Put larger logo images under `assets/logo/`.
+
+## Safety Notes
+
+- 初回確認はシリンジなし、または空シリンジで行ってください。
+- Manual hold / jogでは、Stop、auto-stop、Esc停止が動作することを確認してください。
+- 実液体ラインでは、針位置、廃液先、閉塞、ライン接続を確認してから実行してください。
+- `Start after write` is OFF by default. Keep it OFF unless immediate start is intentional.
+- GUIではSTOP ALLボタンとEscキーで停止できます。
+- A4 `V` pin must not be connected.
+
+## Project Structure
+
+```text
+syringe_perfusion/
+  syringe_perfusion/
+  config/
+  recipes/
+  assets/
+  scripts/
+  tests/
+```
+
+Main entry points:
+
+- `run_gui.py`: GUI application
+- `run_cli.py`: PyInstaller用CLI entry point
+- `python -m syringe_perfusion.cli`: source run用CLI
+
+## Development Status
+
+- Version: V3.2
+- Tests: pytest 57 passed
+- GUI exe build confirmed
+- A4 actual command sending confirmed
+- Tested command behavior: lowercase ASCII with CRLF over 9600 baud USB-TTL UART
+
+## Version History
+
+- V1: serial command wrapper, config, CLI/GUI, logging.
+- V2: Recipe Builder.
+- V2.1: single-pump mode and settings writer.
+- V3.0: left navigation and card UI.
+- V3.1: UI polish and step cards.
+- V3.2: icon/assets and PyInstaller app metadata.
