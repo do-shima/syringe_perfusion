@@ -18,7 +18,10 @@ from .recipe_store import list_recipes, load_recipe
 ACTION_METHODS = {
     "start-forward": "start_forward",
     "start-reverse": "start_reverse",
+    "manual-forward": "manual_forward",
+    "manual-reverse": "manual_reverse",
     "stop": "stop",
+    "save": "save",
 }
 
 
@@ -37,6 +40,13 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("--action", required=True, choices=sorted(ACTION_METHODS))
     add_run_metadata_args(send)
     send.add_argument("--dry-run", action="store_true")
+
+    jog = subparsers.add_parser("jog", help="Run a manual jog for a bounded duration")
+    jog.add_argument("--pump", required=True, choices=["IN", "OUT"])
+    jog.add_argument("--direction", required=True, choices=["forward", "reverse"])
+    jog.add_argument("--duration-ms", type=int, default=1000)
+    add_run_metadata_args(jog)
+    jog.add_argument("--dry-run", action="store_true")
 
     run_profile = subparsers.add_parser("run-profile", help="Start a saved A4 condition and log profile metadata")
     run_profile.add_argument("--pump", required=True)
@@ -122,6 +132,20 @@ def dispatch(args: argparse.Namespace) -> int:
             trigger_source=args.trigger_source,
         )
         print(json.dumps(result, ensure_ascii=False))
+        return 0
+
+    if args.command == "jog":
+        results = jog_pump(
+            data,
+            args.pump,
+            args.direction,
+            args.duration_ms,
+            dry_run=args.dry_run,
+            dish_id=args.dish_id,
+            condition=args.condition,
+            trigger_source=args.trigger_source,
+        )
+        print(json.dumps(results, ensure_ascii=False))
         return 0
 
     if args.command == "run-profile":
@@ -219,6 +243,8 @@ def send_action(
     trigger_source: str = "CLI",
     profile_key: str = "",
     profile_calc: dict[str, Any] | None = None,
+    mode: str = "",
+    jog_duration_ms: int | None = None,
 ) -> dict[str, Any]:
     pump = make_pump(data, pump_key, dry_run=dry_run)
     result = call_action(pump, action)
@@ -236,8 +262,44 @@ def send_action(
         target_volume_ul=calc.get("target_volume_ul"),
         estimated_volume_ul=calc.get("estimated_volume_ul"),
         note=calc.get("note", ""),
+        mode=mode,
+        jog_duration_ms=jog_duration_ms,
     )
     return result
+
+
+def jog_pump(
+    data: dict[str, Any],
+    pump_key: str,
+    direction: str,
+    duration_ms: int,
+    *,
+    dry_run: bool = False,
+    dish_id: str = "",
+    condition: str = "",
+    trigger_source: str = "CLI",
+) -> list[dict[str, Any]]:
+    if duration_ms < 50 or duration_ms > 10000:
+        raise ValueError("duration_ms must be between 50 and 10000")
+    if direction not in {"forward", "reverse"}:
+        raise ValueError("direction must be forward or reverse")
+
+    pump = make_pump(data, pump_key, dry_run=dry_run)
+    method = pump.jog_forward if direction == "forward" else pump.jog_reverse
+    results = method(duration_ms)
+    actions = [f"manual-{direction}", "stop"]
+    modes = ["jog_start", "jog_stop"]
+    for result, action, mode in zip(results, actions, modes):
+        log_command(
+            result=result,
+            action=action,
+            dish_id=dish_id,
+            condition=condition,
+            trigger_source=trigger_source,
+            mode=mode,
+            jog_duration_ms=duration_ms,
+        )
+    return results
 
 
 def run_profile(
@@ -253,7 +315,7 @@ def run_profile(
     profile_info = profile_log_info(data, profile_key)
     direction = data["profiles"][profile_key].get("direction", "forward")
     action = "start-reverse" if direction == "reverse" else "start-forward"
-    # Future extension: write speed/time to A4 only after Q1H..Q6H1D command details
+    # Future extension: write speed/time to A4 only after q1h..q6h1d command details
     # are verified on the actual hardware. Initial implementation starts saved A4 settings.
     return send_action(
         data,
@@ -335,7 +397,15 @@ def stop_all(
     note: str = "",
 ) -> list[dict[str, Any]]:
     results = []
-    for pump_key in data["pumps"]:
+    seen_ports: set[str] = set()
+    for pump_key, pump_config in data["pumps"].items():
+        if not pump_config.get("enabled", True):
+            continue
+        port = str(pump_config.get("port", ""))
+        if port and port in seen_ports:
+            continue
+        if port:
+            seen_ports.add(port)
         result = send_action(
             data,
             pump_key,

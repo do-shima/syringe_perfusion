@@ -79,6 +79,8 @@ class RecipeEngine:
             return self._send_pump_command(
                 recipe, block, index, started_monotonic, dry_run, context, block["pump"], "stop"
             )
+        if block_type == "manual_jog":
+            return self._execute_manual_jog(recipe, block, index, started_monotonic, dry_run, context)
         if block_type == "stop_all":
             start = self._event_start(recipe, block, index, started_monotonic)
             results = self.stop_all(
@@ -122,6 +124,46 @@ class RecipeEngine:
                 recipe, block, index, started_monotonic, context, start, "prompt_check", note=block.get("message", "")
             )
         raise ValueError(f"Unsupported block type: {block_type}")
+
+    def _execute_manual_jog(
+        self,
+        recipe: Recipe,
+        block: dict[str, Any],
+        index: int,
+        started_monotonic: float,
+        dry_run: bool,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        start = self._event_start(recipe, block, index, started_monotonic)
+        pump_key = block["pump"]
+        direction = block["direction"]
+        duration_ms = int(block["duration_ms"])
+        pump = pump_from_config(pump_key, self.config_data["pumps"][pump_key], dry_run=dry_run)
+        results = pump.jog_forward(duration_ms) if direction == "forward" else pump.jog_reverse(duration_ms)
+        ended_at = self._now()
+        actions = [f"manual-{direction}", "stop"]
+        modes = ["jog_start", "jog_stop"]
+        for result, action, mode in zip(results, actions, modes):
+            log_command(
+                result=result,
+                action=action,
+                dish_id=context.get("dish_id", ""),
+                condition=context.get("condition", ""),
+                trigger_source=context.get("trigger_source", ""),
+                note=block.get("note", ""),
+                mode=mode,
+                jog_duration_ms=duration_ms,
+                recipe_id=recipe.recipe_id,
+                block_id=block.get("id", ""),
+                block_type=block.get("type", ""),
+                relative_time_s=self._relative(started_monotonic),
+                block_index=index,
+                started_at=start,
+                ended_at=ended_at,
+            )
+        event = self._base_event(recipe, block, index, started_monotonic)
+        event.update({"started_at": start, "ended_at": ended_at, "results": results})
+        return event
 
     def _send_pump_command(
         self,

@@ -17,6 +17,7 @@ from .recipe_store import default_recipe_dir, load_recipe, save_recipe
 PALETTE = [
     ("Pump Start", "pump_start"),
     ("Pump Stop", "pump_stop"),
+    ("Manual Jog", "manual_jog"),
     ("Wait", "wait"),
     ("Stop All", "stop_all"),
     ("Log Marker", "log_marker"),
@@ -38,8 +39,10 @@ class RecipeBuilderFrame(ttk.Frame):
         self.prop_id_var = tk.StringVar(value="")
         self.prop_pump_var = tk.StringVar(value="IN")
         self.prop_action_var = tk.StringVar(value="start_forward")
+        self.prop_direction_var = tk.StringVar(value="forward")
         self.prop_profile_var = tk.StringVar(value="fast30_1ml")
         self.prop_duration_var = tk.StringVar(value="1.0")
+        self.prop_duration_ms_var = tk.StringVar(value="1000")
         self.prop_message_var = tk.StringVar(value="")
         self.prop_note_var = tk.StringVar(value="")
 
@@ -119,6 +122,17 @@ class RecipeBuilderFrame(ttk.Frame):
         self._prop_row(
             props,
             4,
+            "Direction",
+            ttk.Combobox(
+                props,
+                textvariable=self.prop_direction_var,
+                values=["forward", "reverse"],
+                state="readonly",
+            ),
+        )
+        self._prop_row(
+            props,
+            5,
             "Profile",
             ttk.Combobox(
                 props,
@@ -127,11 +141,12 @@ class RecipeBuilderFrame(ttk.Frame):
                 state="readonly",
             ),
         )
-        self._prop_row(props, 5, "Duration s", ttk.Entry(props, textvariable=self.prop_duration_var))
-        self._prop_row(props, 6, "Message", ttk.Entry(props, textvariable=self.prop_message_var))
-        self._prop_row(props, 7, "Note", ttk.Entry(props, textvariable=self.prop_note_var))
+        self._prop_row(props, 6, "Duration s", ttk.Entry(props, textvariable=self.prop_duration_var))
+        self._prop_row(props, 7, "Duration ms", ttk.Entry(props, textvariable=self.prop_duration_ms_var))
+        self._prop_row(props, 8, "Message", ttk.Entry(props, textvariable=self.prop_message_var))
+        self._prop_row(props, 9, "Note", ttk.Entry(props, textvariable=self.prop_note_var))
         ttk.Button(props, text="Apply changes", command=self.apply_properties).grid(
-            row=8, column=0, columnspan=2, sticky="ew", pady=(12, 0)
+            row=10, column=0, columnspan=2, sticky="ew", pady=(12, 0)
         )
 
         bottom = ttk.Frame(self)
@@ -194,8 +209,10 @@ class RecipeBuilderFrame(ttk.Frame):
         self.prop_id_var.set(block.get("id", ""))
         self.prop_pump_var.set(block.get("pump", "IN"))
         self.prop_action_var.set(block.get("action", "start_forward"))
+        self.prop_direction_var.set(block.get("direction", "forward"))
         self.prop_profile_var.set(block.get("profile", "fast30_1ml"))
         self.prop_duration_var.set(str(block.get("duration_s", "")))
+        self.prop_duration_ms_var.set(str(block.get("duration_ms", "1000")))
         self.prop_message_var.set(block.get("message", ""))
         self.prop_note_var.set(block.get("note", ""))
 
@@ -210,6 +227,10 @@ class RecipeBuilderFrame(ttk.Frame):
             block["action"] = "stop" if block_type == "pump_stop" else self.prop_action_var.get()
         if block_type == "pump_start":
             block["profile"] = self.prop_profile_var.get()
+        if block_type == "manual_jog":
+            block["pump"] = self.prop_pump_var.get()
+            block["direction"] = self.prop_direction_var.get()
+            block["duration_ms"] = int(self.prop_duration_ms_var.get())
         if block_type == "wait":
             block["duration_s"] = float(self.prop_duration_var.get())
         if block_type in {"log_marker", "prompt_check"}:
@@ -411,7 +432,10 @@ class RecipeBuilderFrame(ttk.Frame):
 
     @staticmethod
     def uses_reverse(recipe: Recipe) -> bool:
-        return any(block.get("action") == "start_reverse" for block in recipe.blocks)
+        return any(
+            block.get("action") == "start_reverse" or block.get("direction") == "reverse"
+            for block in recipe.blocks
+        )
 
     def run_thread(self, func: Callable[..., None], *args: Any) -> None:
         def worker() -> None:

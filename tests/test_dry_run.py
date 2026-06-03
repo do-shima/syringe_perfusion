@@ -8,7 +8,7 @@ def test_dry_run_send_returns_log_dict() -> None:
     result = pump.start_forward()
     assert result["pump"] == "IN"
     assert result["port"] == "COM5"
-    assert result["command"] == "Q6H2D"
+    assert result["command"] == "q6h2d"
     assert result["response"] == "DRY_RUN"
     assert result["dry_run"] is True
 
@@ -17,4 +17,4 @@ def test_stop_all_sends_stop_to_in_and_out() -> None:
     data = load_config()
     results = stop_all(data, dry_run=True, trigger_source="pytest")
     assert [result["pump"] for result in results] == ["IN", "OUT"]
-    assert [result["command"] for result in results] == ["Q6H6D", "Q6H6D"]
+    assert [result["command"] for result in results] == ["q6h6d", "q6h6d"]

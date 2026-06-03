@@ -120,6 +120,19 @@ def validate_block(
         if block_type == "pump_start" and profile and config_data is not None and profile not in config_data["profiles"]:
             raise ValueError(f"block {index}: unknown profile {profile}")
 
+    if block_type == "manual_jog":
+        pump = block.get("pump")
+        if not pump:
+            raise ValueError(f"block {index}: pump is required")
+        if config_data is not None and pump not in config_data["pumps"]:
+            raise ValueError(f"block {index}: unknown pump {pump}")
+        direction = block.get("direction")
+        if direction not in {"forward", "reverse"}:
+            raise ValueError(f"block {index}: invalid direction {direction!r}")
+        duration_ms = int(block.get("duration_ms", 0))
+        if duration_ms < 50 or duration_ms > 10000:
+            raise ValueError(f"block {index}: duration_ms must be between 50 and 10000")
+
     if block_type == "wait":
         duration = float(block.get("duration_s", 0))
         if duration < 0:

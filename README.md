@@ -9,14 +9,12 @@ GUIは `tkinter`、シリアル通信は `pyserial`、設定はJSONです。Niko
 ## A4接続
 
 - 通信速度: `9600 baud`
-- 開始 前進: `Q6H2D`
-- 開始 後退: `Q6H3D`（実機確認が必要）
-- 停止/緊急停止: `Q6H6D`
-- コマンド末尾: `config/pumps.json` の `terminator` で変更可能
-  - `""`
-  - `"\\r"`
-  - `"\\n"`
-  - `"\\r\\n"`
+- 開始 前進: `q6h2d`
+- 開始 後退: `q6h3d`
+- manual forward: `q6h4d`
+- manual reverse: `q6h5d`
+- 停止/緊急停止: `q6h6d`
+- コマンド末尾: CRLF (`\r\n`)
 
 GUIとCLIは、送信時にCOMポートを開いてすぐ閉じます。これによりGUIとNIS呼び出しCLIがCOMポートを奪い合いにくくなります。
 
@@ -79,6 +77,21 @@ INポンプを前進開始:
 python -m syringe_perfusion.cli send --pump IN --action start-forward --dish-id Dish001 --condition StimA --trigger-source Manual
 ```
 
+Manual操作:
+
+```powershell
+python -m syringe_perfusion.cli send --pump IN --action manual-forward
+python -m syringe_perfusion.cli send --pump IN --action manual-reverse
+python -m syringe_perfusion.cli send --pump IN --action stop
+```
+
+Jog操作:
+
+```powershell
+python -m syringe_perfusion.cli jog --pump IN --direction forward --duration-ms 1000
+python -m syringe_perfusion.cli jog --pump IN --direction reverse --duration-ms 1000
+```
+
 保存済みA4条件をFast-30として開始し、ログに条件情報を残す:
 
 ```powershell
@@ -103,14 +116,25 @@ python -m syringe_perfusion.cli stop-all
 python run_gui.py
 ```
 
-GUIには4つのタブがあります。
+GUIには5つのタブがあります。
 
-- Pump: COMポート、terminator、dry-run、開始/停止、STOP ALL
+- Pump: COMポート、dry-run、開始/停止、Manual / Jog、STOP ALL
 - Syringe / Calculator: シリンジ選択と速度・時間・体積計算
 - Profile: Fast-30、Fast-20、Gentle-60、Gentle-120、Drain-30の確認
 - Run: Dish ID、Condition、Trigger source、IN only、OUT only、Push-pull、Two forward
+- Recipe Builder: V2レシピの作成、dry-run、実行
 
 GUI操作も `logs/a4pump_YYYYMMDD.csv` に記録されます。
+
+PumpタブのManual / Jog:
+
+- `Hold forward` / `Hold reverse`: ボタン押下時に `q6h4d` / `q6h5d`、ボタン解放またはボタン外への移動時に `q6h6d`
+- `Stop`: 選択中ポンプに `q6h6d`
+- `Jog forward` / `Jog reverse`: 指定msだけ `q6h4d` / `q6h5d` を送り、自動で `q6h6d`
+- `Auto stop after ms`: Hold-to-runの保険停止タイマー
+- Escキー: `STOP ALL`
+
+初回はシリンジなし、または空シリンジで確認してください。実液体ラインでは、manual操作前に針位置、廃液ライン、閉塞がないことを確認してください。
 
 ## Nikon/NISから呼ぶ例
 
@@ -139,8 +163,9 @@ V2では、ブロックを縦に並べる方式のレシピビルダーを追加
 利用できるブロック:
 
 - `pump_start`: `IN` / `OUT` に `start_forward` または `start_reverse` を送信
-- `pump_stop`: 指定ポンプに `Q6H6D`
-- `stop_all`: 全ポンプに `Q6H6D`
+- `pump_stop`: 指定ポンプに `q6h6d`
+- `manual_jog`: `IN` / `OUT` に `q6h4d` または `q6h5d` を送り、指定ms後に `q6h6d`
+- `stop_all`: 全ポンプに `q6h6d`
 - `wait`: 指定秒数待つ
 - `log_marker`: ハードウェア操作なしでログだけ記録
 - `prompt_check`: GUIでは確認ダイアログ、CLIでは `--assume-yes` がない場合に標準入力で確認
@@ -178,6 +203,14 @@ GUIでは `Recipe Builder` タブからブロック追加、編集、上下移�
       "action": "start_reverse",
       "profile": "drain30_1ml",
       "note": "Waste suction"
+    },
+    {
+      "id": "b004a",
+      "type": "manual_jog",
+      "pump": "IN",
+      "direction": "forward",
+      "duration_ms": 1000,
+      "note": "Bounded manual jog"
     },
     {
       "id": "b004",
@@ -250,6 +283,9 @@ V2ログでは既存CSVに次の列を追加しています。
 - `block_type`
 - `relative_time_s`
 - `block_index`
+- `mode`
+- `jog_duration_ms`
+- `response_hex`
 
 ## dry-run
 
@@ -282,19 +318,19 @@ one-fileではなくone-folderを優先します。共用PCでトラブルが少
 
 - `pyserial is required`: `pip install -r requirements.txt` を実行してください。
 - COMポートが開けない: A4の電源、USB接続、デバイスマネージャーのCOM番号、他アプリがポートを掴んでいないかを確認してください。
-- A4が反応しない: `terminator` を `""`, `"\\r"`, `"\\n"`, `"\\r\\n"` で切り替えて確認してください。
-- OUT後退が期待通りでない: `Q6H3D` は実機確認が必要です。必ず水または色素で流向を確認してください。
+- A4が反応しない: A4電源、COMポート、9600 baud / 8N1 / no flow control、CRLF終端を確認してください。
+- OUT後退が期待通りでない: `q6h3d` / `q6h5d` は必ず水または色素で流向を確認してください。
 - ログが見つからない: 通常実行ではプロジェクトの `logs/`、exe化後は実行ファイル階層の `logs/` を確認してください。
 
 ## 将来拡張
 
 A4への速度・時間自動設定は、以下コマンド体系が実機で完全確認されてから実装します。
 
-- `Q1HxxD` 速度整数部
-- `Q2HxxD` 速度小数部
-- `Q3HxxD` 時
-- `Q4HxxD` 分
-- `Q5HxxD` 秒
-- `Q6H1D` 保存
+- `q1hxxd` 速度整数部
+- `q2hxxd` 速度小数部
+- `q3hxxd` 時
+- `q4hxxd` 分
+- `q5hxxd` 秒
+- `q6h1d` 保存
 
 現時点では、速度・時間はA4本体側に手動保存し、PC側は開始・停止のみ送ります。

@@ -8,6 +8,7 @@ SCHEMA_VERSION = 2
 BLOCK_TYPES = {
     "pump_start",
     "pump_stop",
+    "manual_jog",
     "stop_all",
     "wait",
     "log_marker",
@@ -37,6 +38,13 @@ DEFAULT_BLOCKS: dict[str, dict[str, Any]] = {
         "type": "pump_stop",
         "pump": "IN",
         "action": "stop",
+        "note": "",
+    },
+    "manual_jog": {
+        "type": "manual_jog",
+        "pump": "IN",
+        "direction": "forward",
+        "duration_ms": 1000,
         "note": "",
     },
     "stop_all": {
@@ -76,6 +84,11 @@ def block_summary(block: dict[str, Any]) -> str:
         )
     if block_type == "pump_stop":
         return f"{block_id}  Pump stop  {block.get('pump', '')}"
+    if block_type == "manual_jog":
+        return (
+            f"{block_id}  Manual jog  {block.get('pump', '')} "
+            f"{block.get('direction', '')}  {int(block.get('duration_ms', 0))} ms"
+        )
     if block_type == "stop_all":
         return f"{block_id}  STOP ALL"
     if block_type == "wait":

@@ -3,13 +3,15 @@
     "IN": {
       "name": "Pump IN",
       "role": "stimulus_in",
-      "port": "COM5",
+      "port": "COM9",
       "baudrate": 9600,
       "terminator": "\\r\\n",
       "commands": {
-        "start_forward": "Q6H2D",
-        "start_reverse": "Q6H3D",
-        "stop": "Q6H6D"
+        "start_forward": "q6h2d",
+        "start_reverse": "q6h3d",
+        "manual_forward": "q6h4d",
+        "manual_reverse": "q6h5d",
+        "stop": "q6h6d"
       }
     },
     "OUT": {
@@ -19,9 +21,11 @@
       "baudrate": 9600,
       "terminator": "\\r\\n",
       "commands": {
-        "start_forward": "Q6H2D",
-        "start_reverse": "Q6H3D",
-        "stop": "Q6H6D"
+        "start_forward": "q6h2d",
+        "start_reverse": "q6h3d",
+        "manual_forward": "q6h4d",
+        "manual_reverse": "q6h5d",
+        "stop": "q6h6d"
       }
     }
   }

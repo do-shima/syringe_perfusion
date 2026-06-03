@@ -13,7 +13,6 @@ from .gui_recipe import RecipeBuilderFrame
 from .profiles import calculate, calculate_profile, result_to_dict, ul_per_mm_from_inner_diameter
 
 
-TERMINATORS = ["", "\\r", "\\n", "\\r\\n"]
 TRIGGER_SOURCES = ["Manual", "Foot pedal comparable", "NIS", "TTL"]
 RUN_MODES = ["IN only", "OUT only", "Push-pull", "Two forward"]
 
@@ -32,6 +31,14 @@ class A4PumpApp(tk.Tk):
         }
         self.terminator_var = tk.StringVar(value=self.data["pumps"]["IN"].get("terminator", "\\r\\n"))
         self.dry_run_var = tk.BooleanVar(value=True)
+        self.manual_pump_var = tk.StringVar(value="IN")
+        self.jog_duration_var = tk.StringVar(value="1000")
+        self.hold_auto_stop_ms_var = tk.StringVar(value="4000")
+        self._manual_active = False
+        self._manual_stop_after_id: str | None = None
+        self._jog_active = False
+        self._jog_stop_after_id: str | None = None
+        self._jog_buttons: list[tk.Widget] = []
 
         self.syringe_var = tk.StringVar(value="terumo_ss05lz_5ml")
         self.calc_mode_var = tk.StringVar(value="volume_duration")
@@ -53,6 +60,8 @@ class A4PumpApp(tk.Tk):
         self.out_delay_var = tk.StringVar(value="0.5")
 
         self._build()
+        self.bind_all("<Escape>", self.on_escape_stop)
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.update_syringe_info()
         self.update_profile_info()
 
@@ -92,9 +101,7 @@ class A4PumpApp(tk.Tk):
         ttk.Label(parent, text="9600").grid(row=2, column=1, sticky="w", pady=4)
 
         ttk.Label(parent, text="Terminator").grid(row=3, column=0, sticky="w", pady=4)
-        ttk.Combobox(parent, textvariable=self.terminator_var, values=TERMINATORS, state="readonly").grid(
-            row=3, column=1, sticky="w", pady=4
-        )
+        ttk.Label(parent, text="CRLF (\\r\\n)").grid(row=3, column=1, sticky="w", pady=4)
 
         ttk.Checkbutton(parent, text="Dry-run", variable=self.dry_run_var).grid(row=4, column=1, sticky="w", pady=4)
 
@@ -123,10 +130,49 @@ class A4PumpApp(tk.Tk):
             row=1, column=2, sticky="ew", padx=4, pady=4
         )
 
-        stop_button = tk.Button(parent, text="STOP ALL", bg="#b00020", fg="white", height=2, command=self.gui_stop_all_now)
-        stop_button.grid(row=7, column=0, columnspan=2, sticky="ew", pady=12)
+        manual = ttk.LabelFrame(parent, text="Manual / Jog", padding=10)
+        manual.grid(row=7, column=0, columnspan=2, sticky="ew", pady=8)
+        for col in range(4):
+            manual.columnconfigure(col, weight=1)
+        ttk.Label(manual, text="Pump selection").grid(row=0, column=0, sticky="w", padx=4, pady=4)
+        ttk.Combobox(
+            manual,
+            textvariable=self.manual_pump_var,
+            values=self.available_pumps(),
+            state="readonly",
+        ).grid(row=0, column=1, sticky="ew", padx=4, pady=4)
+        ttk.Label(manual, text="Auto stop after ms").grid(row=0, column=2, sticky="w", padx=4, pady=4)
+        ttk.Entry(manual, textvariable=self.hold_auto_stop_ms_var, width=10).grid(
+            row=0, column=3, sticky="ew", padx=4, pady=4
+        )
 
-        self.pump_log = self._make_log_box(parent, row=8, columnspan=2)
+        hold_forward = ttk.Button(manual, text="Hold forward")
+        hold_reverse = ttk.Button(manual, text="Hold reverse")
+        hold_forward.grid(row=1, column=0, sticky="ew", padx=4, pady=4)
+        hold_reverse.grid(row=1, column=1, sticky="ew", padx=4, pady=4)
+        ttk.Button(manual, text="Stop", command=self.manual_stop_selected).grid(
+            row=1, column=2, columnspan=2, sticky="ew", padx=4, pady=4
+        )
+
+        hold_forward.bind("<ButtonPress-1>", lambda _e: self.on_manual_press("forward"))
+        hold_forward.bind("<ButtonRelease-1>", lambda _e: self.on_manual_release())
+        hold_forward.bind("<Leave>", lambda _e: self.on_manual_leave())
+        hold_reverse.bind("<ButtonPress-1>", lambda _e: self.on_manual_press("reverse"))
+        hold_reverse.bind("<ButtonRelease-1>", lambda _e: self.on_manual_release())
+        hold_reverse.bind("<Leave>", lambda _e: self.on_manual_leave())
+
+        ttk.Label(manual, text="Jog duration ms").grid(row=2, column=0, sticky="w", padx=4, pady=4)
+        ttk.Entry(manual, textvariable=self.jog_duration_var, width=10).grid(row=2, column=1, sticky="ew", padx=4, pady=4)
+        jog_forward = ttk.Button(manual, text="Jog forward", command=lambda: self.start_jog("forward"))
+        jog_reverse = ttk.Button(manual, text="Jog reverse", command=lambda: self.start_jog("reverse"))
+        jog_forward.grid(row=2, column=2, sticky="ew", padx=4, pady=4)
+        jog_reverse.grid(row=2, column=3, sticky="ew", padx=4, pady=4)
+        self._jog_buttons = [jog_forward, jog_reverse]
+
+        stop_button = tk.Button(parent, text="STOP ALL", bg="#b00020", fg="white", height=2, command=self.gui_stop_all_now)
+        stop_button.grid(row=8, column=0, columnspan=2, sticky="ew", pady=12)
+
+        self.pump_log = self._make_log_box(parent, row=9, columnspan=2)
 
     def _build_calc_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(1, weight=1)
@@ -232,6 +278,164 @@ class A4PumpApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Connection test failed", str(exc))
 
+    def available_pumps(self) -> list[str]:
+        return [pump_key for pump_key, cfg in self.data["pumps"].items() if cfg.get("enabled", True)]
+
+    def selected_manual_pump(self) -> str:
+        pump_key = self.manual_pump_var.get()
+        if pump_key not in self.available_pumps():
+            pump_key = "IN"
+            self.manual_pump_var.set(pump_key)
+        return pump_key
+
+    def on_manual_press(self, direction: str) -> str:
+        if self._manual_active or self._jog_active:
+            return "break"
+        pump_key = self.selected_manual_pump()
+        action = "manual-forward" if direction == "forward" else "manual-reverse"
+        self._manual_active = True
+        try:
+            self.gui_send_manual(pump_key, action, mode="manual_hold_start")
+            self.start_hold_auto_stop()
+        except Exception as exc:
+            self._manual_active = False
+            self.cancel_hold_auto_stop()
+            messagebox.showerror("Manual hold failed", str(exc))
+        return "break"
+
+    def on_manual_release(self) -> str:
+        if self._manual_active:
+            self.manual_stop_selected(mode="manual_hold_stop")
+        return "break"
+
+    def on_manual_leave(self) -> str:
+        if self._manual_active:
+            self.manual_stop_selected(mode="manual_hold_stop")
+        return "break"
+
+    def start_hold_auto_stop(self) -> None:
+        self.cancel_hold_auto_stop()
+        duration_ms = self.parse_ms(self.hold_auto_stop_ms_var.get(), minimum=50, maximum=10000)
+        self._manual_stop_after_id = self.after(duration_ms, lambda: self.manual_stop_selected(mode="manual_hold_stop"))
+
+    def cancel_hold_auto_stop(self) -> None:
+        if self._manual_stop_after_id is not None:
+            try:
+                self.after_cancel(self._manual_stop_after_id)
+            except Exception:
+                pass
+            self._manual_stop_after_id = None
+
+    def manual_stop_selected(self, *, mode: str = "manual_hold_stop") -> None:
+        self.cancel_hold_auto_stop()
+        self.cancel_jog_timer()
+        pump_key = self.selected_manual_pump()
+        try:
+            self.gui_send_manual(pump_key, "stop", mode=mode)
+        except Exception as exc:
+            messagebox.showerror("Manual stop failed", str(exc))
+        finally:
+            self._manual_active = False
+            self.set_jog_buttons_enabled(True)
+
+    def start_jog(self, direction: str) -> None:
+        if self._manual_active or self._jog_active:
+            return
+        try:
+            duration_ms = self.parse_ms(self.jog_duration_var.get(), minimum=50, maximum=10000)
+        except Exception as exc:
+            messagebox.showerror("Invalid jog duration", str(exc))
+            return
+        pump_key = self.selected_manual_pump()
+        action = "manual-forward" if direction == "forward" else "manual-reverse"
+        self._jog_active = True
+        self.set_jog_buttons_enabled(False)
+        try:
+            self.gui_send_manual(pump_key, action, mode="jog_start", jog_duration_ms=duration_ms)
+        except Exception as exc:
+            try:
+                self.gui_send_manual(pump_key, "stop", mode="jog_stop", jog_duration_ms=duration_ms)
+            except Exception as stop_exc:
+                self.append_log(self.pump_log, f"Jog stop after start failure failed: {stop_exc}")
+            self._jog_active = False
+            self.set_jog_buttons_enabled(True)
+            messagebox.showerror("Jog failed", str(exc))
+            return
+        self._jog_stop_after_id = self.after(duration_ms, lambda: self.finish_jog(pump_key, duration_ms))
+
+    def finish_jog(self, pump_key: str, duration_ms: int) -> None:
+        self._jog_stop_after_id = None
+        try:
+            self.gui_send_manual(pump_key, "stop", mode="jog_stop", jog_duration_ms=duration_ms)
+        except Exception as exc:
+            messagebox.showerror("Jog stop failed", str(exc))
+        finally:
+            self._jog_active = False
+            self.set_jog_buttons_enabled(True)
+
+    def cancel_jog_timer(self) -> None:
+        if self._jog_stop_after_id is not None:
+            try:
+                self.after_cancel(self._jog_stop_after_id)
+            except Exception:
+                pass
+            self._jog_stop_after_id = None
+        self._jog_active = False
+
+    def set_jog_buttons_enabled(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        for button in self._jog_buttons:
+            button.configure(state=state)
+
+    def gui_send_manual(
+        self,
+        pump_key: str,
+        action: str,
+        *,
+        mode: str,
+        jog_duration_ms: int | None = None,
+    ) -> None:
+        self.apply_gui_pump_settings()
+        result = send_action(
+            self.data,
+            pump_key,
+            action,
+            dry_run=self.dry_run_var.get(),
+            dish_id=self.dish_id_var.get(),
+            condition=self.condition_var.get(),
+            trigger_source="Manual",
+            mode=mode,
+            jog_duration_ms=jog_duration_ms,
+        )
+        self.append_log(self.pump_log, json.dumps(result, ensure_ascii=False))
+
+    def on_escape_stop(self, _event: tk.Event[Any] | None = None) -> str:
+        self.gui_stop_all_now()
+        return "break"
+
+    def on_close(self) -> None:
+        self.cancel_hold_auto_stop()
+        self.cancel_jog_timer()
+        try:
+            self.apply_gui_pump_settings()
+            results = stop_all(
+                self.data,
+                dry_run=self.dry_run_var.get(),
+                dish_id=self.dish_id_var.get(),
+                condition=self.condition_var.get(),
+                trigger_source="Manual",
+                note="WM_DELETE_WINDOW",
+            )
+            self.pump_log.insert("end", json.dumps(results, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            try:
+                self.pump_log.insert("end", f"Close stop_all failed: {exc}\n")
+            except Exception:
+                pass
+            print(f"Close stop_all failed: {exc}")
+        finally:
+            self.destroy()
+
     def update_syringe_info(self) -> None:
         syringe = self.data["syringes"][self.syringe_var.get()]
         calibrated = syringe.get("calibrated_ul_per_mm")
@@ -303,6 +507,10 @@ class A4PumpApp(tk.Tk):
         self.append_log(self.pump_log, json.dumps(result, ensure_ascii=False))
 
     def gui_stop_all_now(self) -> None:
+        self.cancel_hold_auto_stop()
+        self.cancel_jog_timer()
+        self.set_jog_buttons_enabled(True)
+        self._manual_active = False
         self.run_thread(self._stop_all_worker)
 
     def _stop_all_worker(self) -> None:
@@ -359,7 +567,8 @@ class A4PumpApp(tk.Tk):
     def apply_gui_pump_settings(self) -> None:
         for pump_key, var in self.port_vars.items():
             self.data["pumps"][pump_key]["port"] = var.get()
-            self.data["pumps"][pump_key]["terminator"] = self.terminator_var.get()
+            self.data["pumps"][pump_key]["terminator"] = "\\r\\n"
+        self.terminator_var.set("\\r\\n")
 
     def run_thread(self, func: Callable[..., None], *args: Any) -> None:
         def worker() -> None:
@@ -382,6 +591,13 @@ class A4PumpApp(tk.Tk):
     def float_or_none(value: str) -> float | None:
         stripped = value.strip()
         return None if stripped == "" else float(stripped)
+
+    @staticmethod
+    def parse_ms(value: str, *, minimum: int, maximum: int) -> int:
+        duration_ms = int(value.strip())
+        if duration_ms < minimum or duration_ms > maximum:
+            raise ValueError(f"value must be between {minimum} and {maximum} ms")
+        return duration_ms
 
     @staticmethod
     def format_result(result: dict[str, Any]) -> str:
