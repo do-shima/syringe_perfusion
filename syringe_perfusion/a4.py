@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 from .config import decode_terminator
@@ -14,12 +15,46 @@ DEFAULT_COMMANDS = {
     "manual_forward": "q6h4d",
     "manual_reverse": "q6h5d",
     "stop": "q6h6d",
+    "save": "q6h1d",
 }
 
 
 def _validate_jog_duration(duration_ms: int) -> None:
     if duration_ms < 50 or duration_ms > 10000:
         raise ValueError("duration_ms must be between 50 and 10000")
+
+
+def format_speed_commands(speed_mm_min: float) -> list[str]:
+    raw_speed = Decimal(str(speed_mm_min))
+    if raw_speed < Decimal("0.01"):
+        raise ValueError("speed_mm_min must be between 0.01 and 150.00")
+    speed = raw_speed.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if speed < Decimal("0.01") or speed > Decimal("150.00"):
+        raise ValueError("speed_mm_min must be between 0.01 and 150.00")
+    integer = int(speed)
+    fraction = int((speed - Decimal(integer)) * 100)
+    return [f"q1h{integer:02d}d", f"q2h{fraction:02d}d"]
+
+
+def format_time_commands(duration_s: float) -> list[str]:
+    rounded_seconds = int(Decimal(str(duration_s)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    if rounded_seconds <= 0:
+        raise ValueError("duration_s must be positive")
+    max_seconds = (99 * 3600) + (59 * 60) + 59
+    if rounded_seconds > max_seconds:
+        raise ValueError("duration_s must not exceed 99:59:59")
+    hours = rounded_seconds // 3600
+    remainder = rounded_seconds % 3600
+    minutes = remainder // 60
+    seconds = remainder % 60
+    return [f"q3h{hours:02d}d", f"q4h{minutes:02d}d", f"q5h{seconds:02d}d"]
+
+
+def format_settings_commands(speed_mm_min: float, duration_s: float, *, save: bool = True) -> list[str]:
+    commands = format_speed_commands(speed_mm_min) + format_time_commands(duration_s)
+    if save:
+        commands.append(DEFAULT_COMMANDS["save"])
+    return commands
 
 
 @dataclass
@@ -48,7 +83,19 @@ class A4Pump:
         return self.send_raw(self.commands.get("stop", DEFAULT_COMMANDS["stop"]))
 
     def save(self) -> dict[str, Any]:
-        return self.send_raw(self.commands.get("save", "q6h1d"))
+        return self.send_raw(self.commands.get("save", DEFAULT_COMMANDS["save"]))
+
+    def set_speed(self, speed_mm_min: float) -> list[dict[str, Any]]:
+        return self.send_sequence(format_speed_commands(speed_mm_min))
+
+    def set_time(self, duration_s: float) -> list[dict[str, Any]]:
+        return self.send_sequence(format_time_commands(duration_s))
+
+    def write_settings(self, speed_mm_min: float, duration_s: float, *, save: bool = True) -> list[dict[str, Any]]:
+        return self.send_sequence(format_settings_commands(speed_mm_min, duration_s, save=save))
+
+    def write_profile_settings(self, speed_mm_min: float, duration_s: float, *, save: bool = True) -> list[dict[str, Any]]:
+        return self.write_settings(speed_mm_min, duration_s, save=save)
 
     def jog_forward(self, duration_ms: int = 1000) -> list[dict[str, Any]]:
         return self._jog("manual_forward", duration_ms)

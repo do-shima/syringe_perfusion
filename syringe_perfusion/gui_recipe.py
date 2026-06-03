@@ -102,12 +102,13 @@ class RecipeBuilderFrame(ttk.Frame):
         props.columnconfigure(1, weight=1)
         self._prop_row(props, 0, "Type", ttk.Label(props, textvariable=self.prop_type_var))
         self._prop_row(props, 1, "ID", ttk.Entry(props, textvariable=self.prop_id_var))
-        self._prop_row(
+        self.prop_pump_combo = ttk.Combobox(
             props,
-            2,
-            "Pump",
-            ttk.Combobox(props, textvariable=self.prop_pump_var, values=list(self.app.data["pumps"]), state="readonly"),
+            textvariable=self.prop_pump_var,
+            values=self.app.available_pumps(),
+            state="readonly",
         )
+        self._prop_row(props, 2, "Pump", self.prop_pump_combo)
         self._prop_row(
             props,
             3,
@@ -180,9 +181,17 @@ class RecipeBuilderFrame(ttk.Frame):
 
     def add_block(self, block_type: str) -> None:
         block = default_block(block_type)
+        if "pump" in block and block["pump"] not in self.app.available_pumps():
+            block["pump"] = "IN"
         block["id"] = block_id(self.blocks)
         self.blocks.append(block)
         self.refresh_timeline(select=len(self.blocks) - 1)
+
+    def update_available_pumps(self) -> None:
+        pumps = self.app.available_pumps()
+        self.prop_pump_combo.configure(values=pumps)
+        if self.prop_pump_var.get() not in pumps:
+            self.prop_pump_var.set("IN")
 
     def refresh_timeline(self, select: int | None = None) -> None:
         self.timeline.delete(0, "end")

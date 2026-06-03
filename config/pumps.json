@@ -1,31 +1,37 @@
 {
   "pumps": {
     "IN": {
+      "enabled": true,
       "name": "Pump IN",
       "role": "stimulus_in",
       "port": "COM9",
       "baudrate": 9600,
       "terminator": "\\r\\n",
+      "timeout": 1.0,
       "commands": {
         "start_forward": "q6h2d",
         "start_reverse": "q6h3d",
         "manual_forward": "q6h4d",
         "manual_reverse": "q6h5d",
-        "stop": "q6h6d"
+        "stop": "q6h6d",
+        "save": "q6h1d"
       }
     },
     "OUT": {
+      "enabled": false,
       "name": "Pump OUT",
       "role": "waste_or_wash",
-      "port": "COM6",
+      "port": "",
       "baudrate": 9600,
       "terminator": "\\r\\n",
+      "timeout": 1.0,
       "commands": {
         "start_forward": "q6h2d",
         "start_reverse": "q6h3d",
         "manual_forward": "q6h4d",
         "manual_reverse": "q6h5d",
-        "stop": "q6h6d"
+        "stop": "q6h6d",
+        "save": "q6h1d"
       }
     }
   }

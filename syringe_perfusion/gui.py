@@ -6,8 +6,8 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Any, Callable
 
-from .a4 import list_serial_ports
-from .cli import pushpull, run_profile, send_action, stop_all
+from .a4 import DEFAULT_COMMANDS, format_settings_commands, list_serial_ports
+from .cli import pushpull, run_profile, send_action, stop_all, write_profile, write_settings
 from .config import load_config
 from .gui_recipe import RecipeBuilderFrame
 from .profiles import calculate, calculate_profile, result_to_dict, ul_per_mm_from_inner_diameter
@@ -24,13 +24,15 @@ class A4PumpApp(tk.Tk):
         self.geometry("980x720")
         self.minsize(860, 620)
         self.data = load_config()
+        self.ensure_gui_pump_defaults()
 
         self.port_vars = {
             "IN": tk.StringVar(value=self.data["pumps"]["IN"]["port"]),
-            "OUT": tk.StringVar(value=self.data["pumps"]["OUT"]["port"]),
+            "OUT": tk.StringVar(value=self.data["pumps"].get("OUT", {}).get("port", "")),
         }
         self.terminator_var = tk.StringVar(value=self.data["pumps"]["IN"].get("terminator", "\\r\\n"))
         self.dry_run_var = tk.BooleanVar(value=True)
+        self.out_enabled_var = tk.BooleanVar(value=self.data["pumps"].get("OUT", {}).get("enabled", False))
         self.manual_pump_var = tk.StringVar(value="IN")
         self.jog_duration_var = tk.StringVar(value="1000")
         self.hold_auto_stop_ms_var = tk.StringVar(value="4000")
@@ -47,9 +49,15 @@ class A4PumpApp(tk.Tk):
         self.flow_var = tk.StringVar(value="2.0")
         self.speed_var = tk.StringVar(value="15.37")
         self.calc_result_var = tk.StringVar(value="")
+        self.calc_write_pump_var = tk.StringVar(value="IN")
+        self.calc_save_after_write_var = tk.BooleanVar(value=True)
+        self.last_calc_result: dict[str, Any] | None = None
 
         self.profile_var = tk.StringVar(value="fast30_1ml")
         self.profile_result_var = tk.StringVar(value="")
+        self.profile_write_pump_var = tk.StringVar(value="IN")
+        self.profile_save_after_write_var = tk.BooleanVar(value=True)
+        self.profile_start_after_write_var = tk.BooleanVar(value=False)
 
         self.dish_id_var = tk.StringVar(value="")
         self.condition_var = tk.StringVar(value="")
@@ -62,8 +70,36 @@ class A4PumpApp(tk.Tk):
         self._build()
         self.bind_all("<Escape>", self.on_escape_stop)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.update_out_widgets_state()
+        self.update_run_mode_options()
+        self.update_manual_pump_options()
         self.update_syringe_info()
         self.update_profile_info()
+
+    def ensure_gui_pump_defaults(self) -> None:
+        if "IN" not in self.data["pumps"]:
+            raise KeyError("IN pump is required")
+        self.data["pumps"]["IN"]["enabled"] = True
+        self.data["pumps"]["IN"].setdefault("terminator", "\\r\\n")
+        self.data["pumps"]["IN"].setdefault("timeout", 1.0)
+        self.data["pumps"]["IN"].setdefault("commands", DEFAULT_COMMANDS.copy())
+        if "OUT" not in self.data["pumps"]:
+            self.data["pumps"]["OUT"] = {
+                "enabled": False,
+                "name": "Pump OUT",
+                "role": "waste_or_wash",
+                "port": "",
+                "baudrate": 9600,
+                "terminator": "\\r\\n",
+                "timeout": 1.0,
+                "commands": DEFAULT_COMMANDS.copy(),
+            }
+        self.data["pumps"]["OUT"].setdefault("enabled", False)
+        self.data["pumps"]["OUT"].setdefault("port", "")
+        self.data["pumps"]["OUT"].setdefault("baudrate", 9600)
+        self.data["pumps"]["OUT"].setdefault("terminator", "\\r\\n")
+        self.data["pumps"]["OUT"].setdefault("timeout", 1.0)
+        self.data["pumps"]["OUT"].setdefault("commands", DEFAULT_COMMANDS.copy())
 
     def _build(self) -> None:
         tabs = ttk.Notebook(self)
@@ -73,12 +109,12 @@ class A4PumpApp(tk.Tk):
         calc_tab = ttk.Frame(tabs, padding=12)
         profile_tab = ttk.Frame(tabs, padding=12)
         run_tab = ttk.Frame(tabs, padding=12)
-        recipe_tab = RecipeBuilderFrame(tabs, self)
+        self.recipe_tab = RecipeBuilderFrame(tabs, self)
         tabs.add(pump_tab, text="Pump")
         tabs.add(calc_tab, text="Syringe / Calculator")
         tabs.add(profile_tab, text="Profile")
         tabs.add(run_tab, text="Run")
-        tabs.add(recipe_tab, text="Recipe Builder")
+        tabs.add(self.recipe_tab, text="Recipe Builder")
 
         self._build_pump_tab(pump_tab)
         self._build_calc_tab(calc_tab)
@@ -93,25 +129,33 @@ class A4PumpApp(tk.Tk):
         self.in_port_combo = ttk.Combobox(parent, textvariable=self.port_vars["IN"], values=ports)
         self.in_port_combo.grid(row=0, column=1, sticky="ew", pady=4)
 
-        ttk.Label(parent, text="Pump OUT COM").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Checkbutton(
+            parent,
+            text="Use OUT pump",
+            variable=self.out_enabled_var,
+            command=lambda: self.set_out_enabled(self.out_enabled_var.get()),
+        ).grid(row=1, column=1, sticky="w", pady=4)
+
+        self.out_port_label = ttk.Label(parent, text="Pump OUT COM")
+        self.out_port_label.grid(row=2, column=0, sticky="w", pady=4)
         self.out_port_combo = ttk.Combobox(parent, textvariable=self.port_vars["OUT"], values=ports)
-        self.out_port_combo.grid(row=1, column=1, sticky="ew", pady=4)
+        self.out_port_combo.grid(row=2, column=1, sticky="ew", pady=4)
 
-        ttk.Label(parent, text="Baudrate").grid(row=2, column=0, sticky="w", pady=4)
-        ttk.Label(parent, text="9600").grid(row=2, column=1, sticky="w", pady=4)
+        ttk.Label(parent, text="Baudrate").grid(row=3, column=0, sticky="w", pady=4)
+        ttk.Label(parent, text="9600").grid(row=3, column=1, sticky="w", pady=4)
 
-        ttk.Label(parent, text="Terminator").grid(row=3, column=0, sticky="w", pady=4)
-        ttk.Label(parent, text="CRLF (\\r\\n)").grid(row=3, column=1, sticky="w", pady=4)
+        ttk.Label(parent, text="Terminator").grid(row=4, column=0, sticky="w", pady=4)
+        ttk.Label(parent, text="CRLF (\\r\\n)").grid(row=4, column=1, sticky="w", pady=4)
 
-        ttk.Checkbutton(parent, text="Dry-run", variable=self.dry_run_var).grid(row=4, column=1, sticky="w", pady=4)
+        ttk.Checkbutton(parent, text="Dry-run", variable=self.dry_run_var).grid(row=5, column=1, sticky="w", pady=4)
 
         button_row = ttk.Frame(parent)
-        button_row.grid(row=5, column=0, columnspan=2, sticky="ew", pady=10)
+        button_row.grid(row=6, column=0, columnspan=2, sticky="ew", pady=10)
         ttk.Button(button_row, text="List ports", command=self.refresh_ports).pack(side="left", padx=(0, 8))
         ttk.Button(button_row, text="Connection test", command=self.connection_test).pack(side="left")
 
         actions = ttk.LabelFrame(parent, text="Commands", padding=10)
-        actions.grid(row=6, column=0, columnspan=2, sticky="ew", pady=8)
+        actions.grid(row=7, column=0, columnspan=2, sticky="ew", pady=8)
         for col in range(3):
             actions.columnconfigure(col, weight=1)
         ttk.Button(actions, text="IN start forward", command=lambda: self.run_thread(self.gui_send, "IN", "start-forward")).grid(
@@ -120,27 +164,31 @@ class A4PumpApp(tk.Tk):
         ttk.Button(actions, text="IN stop", command=lambda: self.run_thread(self.gui_send, "IN", "stop")).grid(
             row=0, column=1, sticky="ew", padx=4, pady=4
         )
-        ttk.Button(actions, text="OUT start forward", command=lambda: self.run_thread(self.gui_send, "OUT", "start-forward")).grid(
+        self.out_start_forward_button = ttk.Button(actions, text="OUT start forward", command=lambda: self.run_thread(self.gui_send, "OUT", "start-forward"))
+        self.out_start_forward_button.grid(
             row=1, column=0, sticky="ew", padx=4, pady=4
         )
-        ttk.Button(actions, text="OUT start reverse", command=lambda: self.run_thread(self.gui_send, "OUT", "start-reverse")).grid(
+        self.out_start_reverse_button = ttk.Button(actions, text="OUT start reverse", command=lambda: self.run_thread(self.gui_send, "OUT", "start-reverse"))
+        self.out_start_reverse_button.grid(
             row=1, column=1, sticky="ew", padx=4, pady=4
         )
-        ttk.Button(actions, text="OUT stop", command=lambda: self.run_thread(self.gui_send, "OUT", "stop")).grid(
+        self.out_stop_button = ttk.Button(actions, text="OUT stop", command=lambda: self.run_thread(self.gui_send, "OUT", "stop"))
+        self.out_stop_button.grid(
             row=1, column=2, sticky="ew", padx=4, pady=4
         )
 
         manual = ttk.LabelFrame(parent, text="Manual / Jog", padding=10)
-        manual.grid(row=7, column=0, columnspan=2, sticky="ew", pady=8)
+        manual.grid(row=8, column=0, columnspan=2, sticky="ew", pady=8)
         for col in range(4):
             manual.columnconfigure(col, weight=1)
         ttk.Label(manual, text="Pump selection").grid(row=0, column=0, sticky="w", padx=4, pady=4)
-        ttk.Combobox(
+        self.manual_pump_combo = ttk.Combobox(
             manual,
             textvariable=self.manual_pump_var,
             values=self.available_pumps(),
             state="readonly",
-        ).grid(row=0, column=1, sticky="ew", padx=4, pady=4)
+        )
+        self.manual_pump_combo.grid(row=0, column=1, sticky="ew", padx=4, pady=4)
         ttk.Label(manual, text="Auto stop after ms").grid(row=0, column=2, sticky="w", padx=4, pady=4)
         ttk.Entry(manual, textvariable=self.hold_auto_stop_ms_var, width=10).grid(
             row=0, column=3, sticky="ew", padx=4, pady=4
@@ -170,9 +218,9 @@ class A4PumpApp(tk.Tk):
         self._jog_buttons = [jog_forward, jog_reverse]
 
         stop_button = tk.Button(parent, text="STOP ALL", bg="#b00020", fg="white", height=2, command=self.gui_stop_all_now)
-        stop_button.grid(row=8, column=0, columnspan=2, sticky="ew", pady=12)
+        stop_button.grid(row=9, column=0, columnspan=2, sticky="ew", pady=12)
 
-        self.pump_log = self._make_log_box(parent, row=9, columnspan=2)
+        self.pump_log = self._make_log_box(parent, row=10, columnspan=2)
 
     def _build_calc_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(1, weight=1)
@@ -204,8 +252,26 @@ class A4PumpApp(tk.Tk):
             ttk.Entry(parent, textvariable=var).grid(row=idx, column=1, sticky="ew", pady=4)
 
         ttk.Button(parent, text="Calculate", command=self.calculate_gui).grid(row=7, column=1, sticky="e", pady=8)
+        calc_write = ttk.LabelFrame(parent, text="Write calculated settings", padding=10)
+        calc_write.grid(row=8, column=0, columnspan=2, sticky="ew", pady=8)
+        for col in range(4):
+            calc_write.columnconfigure(col, weight=1)
+        ttk.Label(calc_write, text="Target pump").grid(row=0, column=0, sticky="w", padx=4, pady=4)
+        self.calc_write_pump_combo = ttk.Combobox(
+            calc_write,
+            textvariable=self.calc_write_pump_var,
+            values=self.available_pumps(),
+            state="readonly",
+        )
+        self.calc_write_pump_combo.grid(row=0, column=1, sticky="ew", padx=4, pady=4)
+        ttk.Checkbutton(calc_write, text="Save after write", variable=self.calc_save_after_write_var).grid(
+            row=0, column=2, sticky="w", padx=4, pady=4
+        )
+        ttk.Button(calc_write, text="Write calculated settings to A4", command=self.write_calculated_settings_gui).grid(
+            row=0, column=3, sticky="ew", padx=4, pady=4
+        )
         ttk.Label(parent, textvariable=self.calc_result_var, justify="left").grid(
-            row=8, column=0, columnspan=2, sticky="nw", pady=8
+            row=9, column=0, columnspan=2, sticky="nw", pady=8
         )
 
     def _build_profile_tab(self, parent: ttk.Frame) -> None:
@@ -219,19 +285,45 @@ class A4PumpApp(tk.Tk):
         ttk.Label(parent, textvariable=self.profile_result_var, justify="left").grid(
             row=1, column=0, columnspan=2, sticky="nw", pady=8
         )
-        # Future extension: enable this only after A4 Q1H..Q6H1D setting commands are confirmed.
-        ttk.Button(parent, text="Write settings to A4", state="disabled").grid(row=2, column=1, sticky="e", pady=8)
+        write_frame = ttk.LabelFrame(parent, text="Write settings", padding=10)
+        write_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=8)
+        for col in range(4):
+            write_frame.columnconfigure(col, weight=1)
+        ttk.Label(write_frame, text="Target pump").grid(row=0, column=0, sticky="w", padx=4, pady=4)
+        self.profile_write_pump_combo = ttk.Combobox(
+            write_frame,
+            textvariable=self.profile_write_pump_var,
+            values=self.available_pumps(),
+            state="readonly",
+        )
+        self.profile_write_pump_combo.grid(row=0, column=1, sticky="ew", padx=4, pady=4)
+        ttk.Checkbutton(write_frame, text="Save after write", variable=self.profile_save_after_write_var).grid(
+            row=0, column=2, sticky="w", padx=4, pady=4
+        )
+        ttk.Checkbutton(write_frame, text="Start after write", variable=self.profile_start_after_write_var).grid(
+            row=0, column=3, sticky="w", padx=4, pady=4
+        )
+        self.profile_write_button = ttk.Button(
+            write_frame,
+            text="Write settings to A4",
+            command=self.write_profile_settings_gui,
+        )
+        self.profile_write_button.grid(row=1, column=0, columnspan=4, sticky="ew", padx=4, pady=4)
+        self.profile_log = self._make_log_box(parent, row=3, columnspan=2)
 
     def _build_run_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(1, weight=1)
+        self.run_mode_combo = ttk.Combobox(parent, textvariable=self.run_mode_var, values=RUN_MODES, state="readonly")
+        self.profile_out_combo = ttk.Combobox(parent, textvariable=self.profile_out_var, values=list(self.data["profiles"]), state="readonly")
+        self.out_delay_entry = ttk.Entry(parent, textvariable=self.out_delay_var)
         rows = [
             ("Dish ID", ttk.Entry(parent, textvariable=self.dish_id_var)),
             ("Condition", ttk.Entry(parent, textvariable=self.condition_var)),
             ("Trigger source", ttk.Combobox(parent, textvariable=self.trigger_var, values=TRIGGER_SOURCES, state="readonly")),
-            ("Mode", ttk.Combobox(parent, textvariable=self.run_mode_var, values=RUN_MODES, state="readonly")),
+            ("Mode", self.run_mode_combo),
             ("Profile IN", ttk.Combobox(parent, textvariable=self.profile_in_var, values=list(self.data["profiles"]), state="readonly")),
-            ("Profile OUT", ttk.Combobox(parent, textvariable=self.profile_out_var, values=list(self.data["profiles"]), state="readonly")),
-            ("Out delay sec", ttk.Entry(parent, textvariable=self.out_delay_var)),
+            ("Profile OUT", self.profile_out_combo),
+            ("Out delay sec", self.out_delay_entry),
         ]
         for idx, (label, widget) in enumerate(rows):
             ttk.Label(parent, text=label).grid(row=idx, column=0, sticky="w", pady=4)
@@ -257,7 +349,7 @@ class A4PumpApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("List ports failed", str(exc))
             return
-        values = ports or [self.port_vars["IN"].get(), self.port_vars["OUT"].get()]
+        values = ports or [value for value in [self.port_vars["IN"].get(), self.port_vars["OUT"].get()] if value]
         self.in_port_combo.configure(values=values)
         self.out_port_combo.configure(values=values)
         self.append_log(self.pump_log, f"Ports: {', '.join(values)}")
@@ -270,16 +362,66 @@ class A4PumpApp(tk.Tk):
             import serial
 
             self.apply_gui_pump_settings()
-            for pump_key in ["IN", "OUT"]:
+            for pump_key in self.available_pumps():
                 cfg = self.data["pumps"][pump_key]
+                if not str(cfg.get("port", "")).strip():
+                    raise ValueError(f"{pump_key} port is blank")
                 with serial.Serial(cfg["port"], cfg.get("baudrate", 9600), timeout=1):
                     pass
                 self.append_log(self.pump_log, f"{pump_key}: opened and closed {cfg['port']}")
         except Exception as exc:
             messagebox.showerror("Connection test failed", str(exc))
 
+    def is_pump_enabled(self, pump_key: str) -> bool:
+        if pump_key == "IN":
+            return True
+        return bool(self.data["pumps"].get(pump_key, {}).get("enabled", False))
+
     def available_pumps(self) -> list[str]:
-        return [pump_key for pump_key, cfg in self.data["pumps"].items() if cfg.get("enabled", True)]
+        return [pump_key for pump_key in self.data["pumps"] if self.is_pump_enabled(pump_key)]
+
+    def set_out_enabled(self, enabled: bool) -> None:
+        if "OUT" in self.data["pumps"]:
+            self.data["pumps"]["OUT"]["enabled"] = enabled
+        self.out_enabled_var.set(enabled)
+        self.update_out_widgets_state()
+        self.update_run_mode_options()
+        self.update_manual_pump_options()
+
+    def update_out_widgets_state(self) -> None:
+        enabled = self.is_pump_enabled("OUT")
+        for widget_name in ["out_start_forward_button", "out_start_reverse_button", "out_stop_button", "out_delay_entry"]:
+            widget = getattr(self, widget_name, None)
+            if widget is not None:
+                widget.configure(state="normal" if enabled else "disabled")
+        for widget_name in ["out_port_combo", "profile_out_combo"]:
+            widget = getattr(self, widget_name, None)
+            if widget is not None:
+                widget.configure(state="readonly" if enabled else "disabled")
+
+    def update_run_mode_options(self) -> None:
+        modes = RUN_MODES if self.is_pump_enabled("OUT") else ["IN only"]
+        if hasattr(self, "run_mode_combo"):
+            self.run_mode_combo.configure(values=modes)
+        if self.run_mode_var.get() not in modes:
+            self.run_mode_var.set("IN only")
+
+    def update_manual_pump_options(self) -> None:
+        pumps = self.available_pumps()
+        for widget_name in ["manual_pump_combo", "profile_write_pump_combo", "calc_write_pump_combo"]:
+            widget = getattr(self, widget_name, None)
+            if widget is not None:
+                widget.configure(values=pumps)
+        for var in [self.manual_pump_var, self.profile_write_pump_var, self.calc_write_pump_var]:
+            if var.get() not in pumps:
+                var.set("IN")
+        recipe_tab = getattr(self, "recipe_tab", None)
+        if recipe_tab is not None and hasattr(recipe_tab, "update_available_pumps"):
+            recipe_tab.update_available_pumps()
+
+    def require_out_enabled_for_mode(self, mode: str) -> None:
+        if mode in {"OUT only", "Push-pull", "Two forward"} and not self.is_pump_enabled("OUT"):
+            raise ValueError(f"{mode} requires OUT pump enabled")
 
     def selected_manual_pump(self) -> str:
         pump_key = self.manual_pump_var.get()
@@ -464,7 +606,8 @@ class A4PumpApp(tk.Tk):
                 speed_mm_min=self.float_or_none(self.speed_var.get()),
                 syringe_key=syringe_key,
             )
-            self.calc_result_var.set(self.format_result(result_to_dict(result)))
+            self.last_calc_result = result_to_dict(result)
+            self.calc_result_var.set(self.format_result(self.last_calc_result))
         except Exception as exc:
             messagebox.showerror("Calculation failed", str(exc))
 
@@ -487,11 +630,82 @@ class A4PumpApp(tk.Tk):
                 else "estimated volume uL:",
                 f"warning: {result.warning}" if result.warning else "",
                 "",
-                "Initial version does not write speed/time settings to A4.",
+                "Use Write settings to A4 to send these values.",
             ]
             self.profile_result_var.set("\n".join(line for line in lines if line != ""))
         except Exception as exc:
             self.profile_result_var.set(f"ERROR: {exc}")
+
+    def write_profile_settings_gui(self, *, confirm: bool = True) -> list[dict[str, Any]] | None:
+        self.apply_gui_pump_settings()
+        profile_key = self.profile_var.get()
+        profile = self.data["profiles"][profile_key]
+        syringe_key = profile["syringe"]
+        calc = calculate_profile(profile, self.data["syringes"][syringe_key], syringe_key)
+        if calc.speed_mm_min is None or calc.duration_s is None:
+            raise ValueError(f"profile {profile_key} does not provide speed/time settings")
+        save = self.profile_save_after_write_var.get()
+        start_after_write = self.profile_start_after_write_var.get()
+        commands = format_settings_commands(calc.speed_mm_min, calc.duration_s, save=save)
+        if start_after_write:
+            commands.append("q6h3d" if profile.get("direction", "forward") == "reverse" else "q6h2d")
+        if confirm and not self.confirm_settings_write(calc.speed_mm_min, calc.duration_s, commands):
+            return None
+        results = write_profile(
+            self.data,
+            self.profile_write_pump_var.get(),
+            profile_key,
+            save=save,
+            start_after_write=start_after_write,
+            dry_run=self.dry_run_var.get(),
+            dish_id=self.dish_id_var.get(),
+            condition=self.condition_var.get(),
+            trigger_source="Manual",
+        )
+        self.append_log(self.profile_log, json.dumps(results, ensure_ascii=False))
+        return results
+
+    def write_calculated_settings_gui(self, *, confirm: bool = True) -> list[dict[str, Any]] | None:
+        self.apply_gui_pump_settings()
+        if self.last_calc_result is None:
+            messagebox.showerror("No calculated settings", "Run Calculate before writing settings.")
+            return None
+        speed = self.last_calc_result.get("speed_mm_min")
+        duration = self.last_calc_result.get("duration_s")
+        if speed is None or duration is None:
+            raise ValueError("calculation result does not include speed_mm_min and duration_s")
+        save = self.calc_save_after_write_var.get()
+        commands = format_settings_commands(float(speed), float(duration), save=save)
+        if confirm and not self.confirm_settings_write(float(speed), float(duration), commands):
+            return None
+        results = write_settings(
+            self.data,
+            self.calc_write_pump_var.get(),
+            float(speed),
+            float(duration),
+            save=save,
+            dry_run=self.dry_run_var.get(),
+            dish_id=self.dish_id_var.get(),
+            condition=self.condition_var.get(),
+            trigger_source="Manual",
+        )
+        self.append_log(self.pump_log, json.dumps(results, ensure_ascii=False))
+        return results
+
+    def confirm_settings_write(self, speed_mm_min: float, duration_s: float, commands: list[str]) -> bool:
+        seconds = int(round(duration_s))
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        secs = seconds % 60
+        text = "\n".join(
+            [
+                f"speed {speed_mm_min:.2f} mm/min",
+                f"time {hours:02d}:{minutes:02d}:{secs:02d}",
+                "commands:",
+                *[f"  {command}" for command in commands],
+            ]
+        )
+        return messagebox.askokcancel("Write settings to A4", text)
 
     def gui_send(self, pump_key: str, action: str) -> None:
         self.apply_gui_pump_settings()
@@ -528,6 +742,7 @@ class A4PumpApp(tk.Tk):
     def start_run_mode(self) -> None:
         self.apply_gui_pump_settings()
         mode = self.run_mode_var.get()
+        self.require_out_enabled_for_mode(mode)
         common = {
             "dry_run": self.dry_run_var.get(),
             "dish_id": self.dish_id_var.get(),
@@ -565,9 +780,23 @@ class A4PumpApp(tk.Tk):
         self.append_log(self.run_log, json.dumps(result, ensure_ascii=False))
 
     def apply_gui_pump_settings(self) -> None:
-        for pump_key, var in self.port_vars.items():
-            self.data["pumps"][pump_key]["port"] = var.get()
-            self.data["pumps"][pump_key]["terminator"] = "\\r\\n"
+        in_port = self.port_vars["IN"].get().strip()
+        if not in_port:
+            raise ValueError("IN port is required")
+        self.data["pumps"]["IN"]["enabled"] = True
+        self.data["pumps"]["IN"]["port"] = in_port
+        self.data["pumps"]["IN"]["terminator"] = "\\r\\n"
+        self.data["pumps"]["IN"].setdefault("commands", DEFAULT_COMMANDS.copy())
+
+        if "OUT" in self.data["pumps"]:
+            out_enabled = self.out_enabled_var.get()
+            out_port = self.port_vars["OUT"].get().strip()
+            self.data["pumps"]["OUT"]["enabled"] = out_enabled
+            self.data["pumps"]["OUT"]["port"] = out_port
+            self.data["pumps"]["OUT"]["terminator"] = "\\r\\n"
+            self.data["pumps"]["OUT"].setdefault("commands", DEFAULT_COMMANDS.copy())
+            if out_enabled and not out_port:
+                raise ValueError("OUT port is required when OUT pump is enabled")
         self.terminator_var.set("\\r\\n")
 
     def run_thread(self, func: Callable[..., None], *args: Any) -> None:

@@ -113,6 +113,8 @@ def validate_block(
             raise ValueError(f"block {index}: pump is required")
         if config_data is not None and pump not in config_data["pumps"]:
             raise ValueError(f"block {index}: unknown pump {pump}")
+        if config_data is not None and not config_data["pumps"][pump].get("enabled", True):
+            raise ValueError(f"block {index}: pump {pump} is disabled")
         action = block.get("action")
         if action not in PUMP_ACTIONS[block_type]:
             raise ValueError(f"block {index}: invalid action {action!r} for {block_type}")
@@ -126,6 +128,8 @@ def validate_block(
             raise ValueError(f"block {index}: pump is required")
         if config_data is not None and pump not in config_data["pumps"]:
             raise ValueError(f"block {index}: unknown pump {pump}")
+        if config_data is not None and not config_data["pumps"][pump].get("enabled", True):
+            raise ValueError(f"block {index}: pump {pump} is disabled")
         direction = block.get("direction")
         if direction not in {"forward", "reverse"}:
             raise ValueError(f"block {index}: invalid direction {direction!r}")

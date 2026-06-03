@@ -48,6 +48,22 @@ def build_parser() -> argparse.ArgumentParser:
     add_run_metadata_args(jog)
     jog.add_argument("--dry-run", action="store_true")
 
+    write_settings_parser = subparsers.add_parser("write-settings", help="Write speed/time settings to one A4 pump")
+    write_settings_parser.add_argument("--pump", required=True, choices=["IN", "OUT"])
+    write_settings_parser.add_argument("--speed-mm-min", type=float, required=True)
+    write_settings_parser.add_argument("--duration-s", type=float, required=True)
+    write_settings_parser.add_argument("--save", action=argparse.BooleanOptionalAction, default=True)
+    add_run_metadata_args(write_settings_parser)
+    write_settings_parser.add_argument("--dry-run", action="store_true")
+
+    write_profile_parser = subparsers.add_parser("write-profile", help="Write calculated profile settings to one A4 pump")
+    write_profile_parser.add_argument("--pump", required=True, choices=["IN", "OUT"])
+    write_profile_parser.add_argument("--profile", required=True)
+    write_profile_parser.add_argument("--save", action=argparse.BooleanOptionalAction, default=True)
+    write_profile_parser.add_argument("--start-after-write", action="store_true")
+    add_run_metadata_args(write_profile_parser)
+    write_profile_parser.add_argument("--dry-run", action="store_true")
+
     run_profile = subparsers.add_parser("run-profile", help="Start a saved A4 condition and log profile metadata")
     run_profile.add_argument("--pump", required=True)
     run_profile.add_argument("--profile", required=True)
@@ -140,6 +156,36 @@ def dispatch(args: argparse.Namespace) -> int:
             args.pump,
             args.direction,
             args.duration_ms,
+            dry_run=args.dry_run,
+            dish_id=args.dish_id,
+            condition=args.condition,
+            trigger_source=args.trigger_source,
+        )
+        print(json.dumps(results, ensure_ascii=False))
+        return 0
+
+    if args.command == "write-settings":
+        results = write_settings(
+            data,
+            args.pump,
+            args.speed_mm_min,
+            args.duration_s,
+            save=args.save,
+            dry_run=args.dry_run,
+            dish_id=args.dish_id,
+            condition=args.condition,
+            trigger_source=args.trigger_source,
+        )
+        print(json.dumps(results, ensure_ascii=False))
+        return 0
+
+    if args.command == "write-profile":
+        results = write_profile(
+            data,
+            args.pump,
+            args.profile,
+            save=args.save,
+            start_after_write=args.start_after_write,
             dry_run=args.dry_run,
             dish_id=args.dish_id,
             condition=args.condition,
@@ -302,6 +348,87 @@ def jog_pump(
     return results
 
 
+def write_settings(
+    data: dict[str, Any],
+    pump_key: str,
+    speed_mm_min: float,
+    duration_s: float,
+    *,
+    save: bool = True,
+    dry_run: bool = False,
+    dish_id: str = "",
+    condition: str = "",
+    trigger_source: str = "CLI",
+    profile_key: str = "",
+    mode: str = "write_settings",
+) -> list[dict[str, Any]]:
+    pump = make_pump(data, pump_key, dry_run=dry_run)
+    results = pump.write_settings(speed_mm_min, duration_s, save=save)
+    for result in results:
+        log_command(
+            result=result,
+            action="write-settings",
+            dish_id=dish_id,
+            condition=condition,
+            trigger_source=trigger_source,
+            profile=profile_key,
+            speed_mm_min=speed_mm_min,
+            duration_s=duration_s,
+            mode=mode,
+        )
+    return results
+
+
+def write_profile(
+    data: dict[str, Any],
+    pump_key: str,
+    profile_key: str,
+    *,
+    save: bool = True,
+    start_after_write: bool = False,
+    dry_run: bool = False,
+    dish_id: str = "",
+    condition: str = "",
+    trigger_source: str = "CLI",
+) -> list[dict[str, Any]]:
+    calc = profile_log_info(data, profile_key)
+    speed_mm_min = calc.get("speed_mm_min")
+    duration_s = calc.get("duration_s")
+    if speed_mm_min is None or duration_s is None:
+        raise ValueError(f"profile {profile_key} does not provide speed_mm_min and duration_s")
+    results = write_settings(
+        data,
+        pump_key,
+        float(speed_mm_min),
+        float(duration_s),
+        save=save,
+        dry_run=dry_run,
+        dish_id=dish_id,
+        condition=condition,
+        trigger_source=trigger_source,
+        profile_key=profile_key,
+        mode="write_profile",
+    )
+    if start_after_write:
+        direction = data["profiles"][profile_key].get("direction", "forward")
+        action = "start-reverse" if direction == "reverse" else "start-forward"
+        results.append(
+            send_action(
+                data,
+                pump_key,
+                action,
+                dry_run=dry_run,
+                dish_id=dish_id,
+                condition=condition,
+                trigger_source=trigger_source,
+                profile_key=profile_key,
+                profile_calc=calc,
+                mode="write_profile_start",
+            )
+        )
+    return results
+
+
 def run_profile(
     data: dict[str, Any],
     pump_key: str,
@@ -346,6 +473,8 @@ def pushpull(
 ) -> list[dict[str, Any]]:
     if out_delay < 0:
         raise ValueError("out_delay must be zero or positive")
+    ensure_pump_enabled(data, in_pump)
+    ensure_pump_enabled(data, out_pump)
     results = [
         run_profile(
             data,
@@ -439,7 +568,19 @@ def make_pump(data: dict[str, Any], pump_key: str, *, dry_run: bool = False) -> 
         pump_config = data["pumps"][pump_key]
     except KeyError as exc:
         raise KeyError(f"Unknown pump: {pump_key}") from exc
+    ensure_pump_enabled(data, pump_key)
+    if not str(pump_config.get("port", "")).strip():
+        raise ValueError(f"Pump {pump_key} is enabled but port is blank")
     return pump_from_config(pump_key, pump_config, dry_run=dry_run)
+
+
+def ensure_pump_enabled(data: dict[str, Any], pump_key: str) -> None:
+    try:
+        pump_config = data["pumps"][pump_key]
+    except KeyError as exc:
+        raise KeyError(f"Unknown pump: {pump_key}") from exc
+    if not pump_config.get("enabled", True):
+        raise ValueError(f"Pump {pump_key} is disabled")
 
 
 def call_action(pump: A4Pump, action: str) -> dict[str, Any]:

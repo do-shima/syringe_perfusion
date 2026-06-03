@@ -54,7 +54,9 @@ class RecipeEngine:
         ctx = context or {}
         start = started_monotonic if started_monotonic is not None else time.monotonic()
         events = []
-        for pump_key in self.config_data["pumps"]:
+        for pump_key, pump_config in self.config_data["pumps"].items():
+            if not pump_config.get("enabled", True):
+                continue
             block = dict(source_block or {"id": "stop_all", "type": "stop_all"})
             block["pump"] = pump_key
             block["note"] = note
@@ -138,6 +140,7 @@ class RecipeEngine:
         pump_key = block["pump"]
         direction = block["direction"]
         duration_ms = int(block["duration_ms"])
+        self._ensure_enabled(pump_key)
         pump = pump_from_config(pump_key, self.config_data["pumps"][pump_key], dry_run=dry_run)
         results = pump.jog_forward(duration_ms) if direction == "forward" else pump.jog_reverse(duration_ms)
         ended_at = self._now()
@@ -178,6 +181,7 @@ class RecipeEngine:
     ) -> dict[str, Any]:
         start = self._event_start(recipe, block, index, started_monotonic)
         command_key = ACTION_TO_COMMAND_KEY[action]
+        self._ensure_enabled(pump_key)
         pump = pump_from_config(pump_key, self.config_data["pumps"][pump_key], dry_run=dry_run)
         result = getattr(pump, command_key)()
         ended_at = self._now()
@@ -255,6 +259,10 @@ class RecipeEngine:
             "target_volume_ul": calc.target_volume_ul,
             "estimated_volume_ul": calc.estimated_volume_ul,
         }
+
+    def _ensure_enabled(self, pump_key: str) -> None:
+        if not self.config_data["pumps"][pump_key].get("enabled", True):
+            raise ValueError(f"Pump {pump_key} is disabled")
 
     def _confirm_prompt(self, message: str, context: dict[str, Any]) -> None:
         if context.get("assume_yes"):

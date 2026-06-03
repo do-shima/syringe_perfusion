@@ -2,7 +2,7 @@
 
 ## 概要
 
-USB仮想COM経由でA4シリンジポンプ1台または2台を制御するPythonプロジェクトです。初期実装では、A4本体に手動保存済みの速度・時間条件を呼び出して開始・停止します。PCからA4本体へ速度・時間を書き込む機能は、実機でコマンド体系が完全確認されてから追加します。
+USB仮想COM経由でA4シリンジポンプ1台または2台を制御するPythonプロジェクトです。V2.1では、A4本体への速度・時間書き込み、保存済み条件の開始・停止、manual hold、manual jogを扱えます。
 
 GUIは `tkinter`、シリアル通信は `pyserial`、設定はJSONです。Nikon/NIS-Elementsから呼び出すためのCLIと、手動操作用GUIを分けています。
 
@@ -14,6 +14,12 @@ GUIは `tkinter`、シリアル通信は `pyserial`、設定はJSONです。Niko
 - manual forward: `q6h4d`
 - manual reverse: `q6h5d`
 - 停止/緊急停止: `q6h6d`
+- 速度整数部: `q1hxxd`
+- 速度小数部: `q2hxxd`
+- 時: `q3hHHd`
+- 分: `q4hMMd`
+- 秒: `q5hSSd`
+- パラメータ保存: `q6h1d`
 - コマンド末尾: CRLF (`\r\n`)
 
 GUIとCLIは、送信時にCOMポートを開いてすぐ閉じます。これによりGUIとNIS呼び出しCLIがCOMポートを奪い合いにくくなります。
@@ -36,6 +42,15 @@ python -m syringe_perfusion.cli list-ports
 - `recipes.json`: 複数ポンプ動作の手順
 
 PyInstallerでone-folder化した場合も、実行ファイル階層または同梱された `config/` を参照します。
+
+## Single Pump Mode
+
+`config/pumps.json` またはGUIのPumpタブでOUTポンプを無効化できます。OUT disabledではINだけが有効になり、OUT COM portは空欄で構いません。
+
+- OUT disabled: `IN only` のみ実行可能
+- OUT disabled: OUT操作、`OUT only`、`Push-pull`、`Two forward`、Recipe内OUTブロックは無効またはエラー
+- OUT enabled: OUT COM portが必須
+- `STOP ALL` はdisabledポンプをスキップします
 
 ## Fast-30条件
 
@@ -92,6 +107,15 @@ python -m syringe_perfusion.cli jog --pump IN --direction forward --duration-ms 
 python -m syringe_perfusion.cli jog --pump IN --direction reverse --duration-ms 1000
 ```
 
+A4へ速度・時間を書き込む:
+
+```powershell
+python -m syringe_perfusion.cli write-settings --pump IN --speed-mm-min 15.37 --duration-s 30 --save
+python -m syringe_perfusion.cli write-profile --pump IN --profile fast30_1ml --save
+```
+
+`write-profile` はデフォルトでは書き込みと保存のみで、ポンプを開始しません。明示的に開始する場合だけ `--start-after-write` を付けます。
+
 保存済みA4条件をFast-30として開始し、ログに条件情報を残す:
 
 ```powershell
@@ -119,8 +143,8 @@ python run_gui.py
 GUIには5つのタブがあります。
 
 - Pump: COMポート、dry-run、開始/停止、Manual / Jog、STOP ALL
-- Syringe / Calculator: シリンジ選択と速度・時間・体積計算
-- Profile: Fast-30、Fast-20、Gentle-60、Gentle-120、Drain-30の確認
+- Syringe / Calculator: シリンジ選択、速度・時間・体積計算、計算結果のA4書き込み
+- Profile: Fast-30、Fast-20、Gentle-60、Gentle-120、Drain-30の確認とA4書き込み
 - Run: Dish ID、Condition、Trigger source、IN only、OUT only、Push-pull、Two forward
 - Recipe Builder: V2レシピの作成、dry-run、実行
 
@@ -135,6 +159,22 @@ PumpタブのManual / Jog:
 - Escキー: `STOP ALL`
 
 初回はシリンジなし、または空シリンジで確認してください。実液体ラインでは、manual操作前に針位置、廃液ライン、閉塞がないことを確認してください。
+
+ProfileタブのWrite settings:
+
+- Target pumpは有効なポンプだけを選択できます
+- デフォルトはwrite + saveで、モーターは開始しません
+- `Start after write` をONにした場合だけ、profile directionに応じて `q6h2d` または `q6h3d` を送ります
+- Fast-30例: 15.37 mm/min、30 s
+
+```text
+q1h15d
+q2h37d
+q3h00d
+q4h00d
+q5h30d
+q6h1d
+```
 
 ## Nikon/NISから呼ぶ例
 
@@ -322,9 +362,9 @@ one-fileではなくone-folderを優先します。共用PCでトラブルが少
 - OUT後退が期待通りでない: `q6h3d` / `q6h5d` は必ず水または色素で流向を確認してください。
 - ログが見つからない: 通常実行ではプロジェクトの `logs/`、exe化後は実行ファイル階層の `logs/` を確認してください。
 
-## 将来拡張
+## A4速度・時間コマンド
 
-A4への速度・時間自動設定は、以下コマンド体系が実機で完全確認されてから実装します。
+V2.1では以下の確認済み小文字コマンドを使って速度・時間を書き込みます。
 
 - `q1hxxd` 速度整数部
 - `q2hxxd` 速度小数部
@@ -333,4 +373,4 @@ A4への速度・時間自動設定は、以下コマンド体系が実機で完
 - `q5hxxd` 秒
 - `q6h1d` 保存
 
-現時点では、速度・時間はA4本体側に手動保存し、PC側は開始・停止のみ送ります。
+Profileタブ、Calculatorタブ、CLIの `write-settings` / `write-profile` から速度・時間を書き込めます。RunタブのStartは従来通り、保存済み設定を開始します。

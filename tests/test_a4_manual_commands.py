@@ -23,5 +23,6 @@ def test_default_commands_are_lowercase() -> None:
         "manual_forward": "q6h4d",
         "manual_reverse": "q6h5d",
         "stop": "q6h6d",
+        "save": "q6h1d",
     }
     assert all(command == command.lower() for command in DEFAULT_COMMANDS.values())

@@ -13,8 +13,17 @@ def test_dry_run_send_returns_log_dict() -> None:
     assert result["dry_run"] is True
 
 
-def test_stop_all_sends_stop_to_in_and_out() -> None:
+def test_stop_all_skips_disabled_out() -> None:
     data = load_config()
+    results = stop_all(data, dry_run=True, trigger_source="pytest")
+    assert [result["pump"] for result in results] == ["IN"]
+    assert [result["command"] for result in results] == ["q6h6d"]
+
+
+def test_stop_all_sends_stop_to_in_and_out_when_out_enabled() -> None:
+    data = load_config()
+    data["pumps"]["OUT"]["enabled"] = True
+    data["pumps"]["OUT"]["port"] = "COM6"
     results = stop_all(data, dry_run=True, trigger_source="pytest")
     assert [result["pump"] for result in results] == ["IN", "OUT"]
     assert [result["command"] for result in results] == ["q6h6d", "q6h6d"]
