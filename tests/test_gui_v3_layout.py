@@ -1,11 +1,6 @@
-from syringe_perfusion.gui import A4PumpApp
+from syringe_perfusion.app_info import APP_VERSION
 from syringe_perfusion.ui_theme import COLORS, create_card
-
-
-def make_app() -> A4PumpApp:
-    app = A4PumpApp()
-    app.withdraw()
-    return app
+from gui_app_helper import make_app
 
 
 def test_v3_theme_constants_exist() -> None:
@@ -21,6 +16,7 @@ def test_left_navigation_switches_pages() -> None:
         assert card.winfo_class() == "TFrame"
         assert set(app.nav_buttons) >= {"dashboard", "pumps", "run", "profiles", "calculator", "recipes"}
         assert all("[" not in button.cget("text") for button in app.nav_buttons.values())
+        assert app.sidebar_version_label.cget("text") == APP_VERSION
         app.select_page("profiles")
         assert app.page_title_var.get() == "Profiles"
         app.select_page("recipes")

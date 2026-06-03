@@ -5,13 +5,7 @@ import types
 
 import pytest
 
-from syringe_perfusion.gui import A4PumpApp
-
-
-def make_app() -> A4PumpApp:
-    app = A4PumpApp()
-    app.withdraw()
-    return app
+from gui_app_helper import make_app
 
 
 def test_out_disabled_gui_initializes_with_in_only() -> None:

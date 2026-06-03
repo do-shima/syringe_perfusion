@@ -168,6 +168,34 @@ V3.1では、同じTkinter / ttk構成のまま視覚品質を調整していま
 - Recipe Builder中央はListboxではなくstep card表示になり、Block Library / Recipe Steps / Inspector の3ペインは維持しています。
 - アイコン差し替えは将来対応予定で、現時点ではテキストのみです。
 
+## Application icon
+
+V3.2では、アプリアイコンとロゴ画像を `assets/` から読み込む構造を追加しています。画像が未配置でもGUIはそのまま起動します。
+
+App icon design guidance:
+
+- アイコン内に文字を入れない
+- labels、percentages、tiny buttons、小さな英数字は避ける
+- simplified syringe pump silhouetteを使う
+- master imageは `1024x1024` 推奨
+- 小サイズ、特に `32x32` で判別できる太い形にする
+- PNG exportsは `assets/icons/` に置く
+- large logoは `assets/logo/` に置く
+- PyInstallerは `assets/icons/app.ico` が存在する場合だけ `--icon` に使う
+
+Recommended files:
+
+- `assets/icons/app_icon_16.png`
+- `assets/icons/app_icon_32.png`
+- `assets/icons/app_icon_48.png`
+- `assets/icons/app_icon_64.png`
+- `assets/icons/app_icon_128.png`
+- `assets/icons/app_icon_256.png`
+- `assets/icons/app_icon_512.png`
+- `assets/icons/app.ico`
+- `assets/logo/app_logo_512.png`
+- `assets/logo/app_logo_1024.png`
+
 PumpタブのManual / Jog:
 
 - `Hold forward` / `Hold reverse`: ボタン押下時に `q6h4d` / `q6h5d`、ボタン解放またはボタン外への移動時に `q6h6d`

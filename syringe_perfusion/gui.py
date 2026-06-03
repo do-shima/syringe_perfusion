@@ -7,6 +7,8 @@ from tkinter import messagebox, ttk
 from typing import Any, Callable
 
 from .a4 import DEFAULT_COMMANDS, format_settings_commands, list_serial_ports
+from .app_info import APP_NAME, APP_SHORT_NAME, APP_VERSION
+from .assets import find_asset, load_tk_image, set_window_icon
 from .cli import pushpull, run_profile, send_action, stop_all, write_profile, write_settings
 from .config import load_config
 from .gui_recipe import RecipeBuilderFrame
@@ -21,10 +23,11 @@ RUN_MODES = ["IN only", "OUT only", "Push-pull", "Two forward"]
 class A4PumpApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("A4 Syringe Pump Control")
+        self.title(APP_NAME)
         self.geometry("1180x760")
         self.minsize(1040, 680)
         self.style = apply_theme(self)
+        set_window_icon(self)
         self.data = load_config()
         self.ensure_gui_pump_defaults()
 
@@ -73,6 +76,7 @@ class A4PumpApp(tk.Tk):
         self.status_var = tk.StringVar(value="Ready")
         self.nav_buttons: dict[str, ttk.Button] = {}
         self.pages: dict[str, tk.Widget] = {}
+        self._logo_image: tk.PhotoImage | None = None
 
         self._build()
         self.bind_all("<Escape>", self.on_escape_stop)
@@ -167,8 +171,9 @@ class A4PumpApp(tk.Tk):
 
     def _build_sidebar(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
-        ttk.Label(parent, text="A4 Pump", style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 2))
-        ttk.Label(parent, text="V3.0", style="Subtitle.TLabel").grid(row=1, column=0, sticky="w", pady=(0, 16))
+        ttk.Label(parent, text=APP_SHORT_NAME, style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 2))
+        self.sidebar_version_label = ttk.Label(parent, text=APP_VERSION, style="Subtitle.TLabel")
+        self.sidebar_version_label.grid(row=1, column=0, sticky="w", pady=(0, 16))
         items = [
             ("dashboard", "Dashboard"),
             ("pumps", "Pumps"),
@@ -227,14 +232,26 @@ class A4PumpApp(tk.Tk):
     def _build_dashboard_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
         parent.columnconfigure(1, weight=1)
+        identity_card = create_card(parent, APP_SHORT_NAME, "Syringe pump control for perfusion experiments.")
+        identity_card.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        identity_card.columnconfigure(1, weight=1)
+        logo_path = find_asset("logo/app_logo_512.png")
+        if logo_path is not None:
+            self._logo_image = load_tk_image(logo_path)
+            if self._logo_image is not None:
+                ttk.Label(identity_card, image=self._logo_image, style="Card.TLabel").grid(
+                    row=2, column=0, sticky="w", padx=(0, 12), pady=(8, 0)
+                )
+        ttk.Label(identity_card, text=APP_VERSION, style="Value.TLabel").grid(row=2, column=1, sticky="w", pady=(8, 0))
+
         pump_card = create_card(parent, "Connection", "Active pump configuration and dry-run state.")
-        pump_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=(0, 12))
+        pump_card.grid(row=1, column=0, sticky="nsew", padx=(0, 8), pady=(0, 12))
         self.dashboard_connection_var = tk.StringVar(value="")
         ttk.Label(pump_card, textvariable=self.dashboard_connection_var, style="Value.TLabel").grid(
             row=2, column=0, sticky="w", pady=(10, 0)
         )
         action_card = create_card(parent, "Quick actions", "Common safety operations.")
-        action_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=(0, 12))
+        action_card.grid(row=1, column=1, sticky="nsew", padx=(8, 0), pady=(0, 12))
         ttk.Button(action_card, text="STOP ALL", style="Danger.TButton", takefocus=False, command=self.gui_stop_all_now).grid(
             row=2, column=0, sticky="ew", pady=(10, 0)
         )

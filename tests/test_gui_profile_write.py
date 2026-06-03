@@ -1,10 +1,4 @@
-from syringe_perfusion.gui import A4PumpApp
-
-
-def make_app() -> A4PumpApp:
-    app = A4PumpApp()
-    app.withdraw()
-    return app
+from gui_app_helper import make_app
 
 
 def test_profile_write_button_is_enabled() -> None:
