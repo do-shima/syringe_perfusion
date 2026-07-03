@@ -55,6 +55,7 @@ hypothesis/
 # -----------------------------
 logs/*
 !logs/.gitkeep
+nis_logs/
 *.log
 
 # -----------------------------
@@ -64,7 +65,12 @@ logs/*
 # Use these local files for machine-specific COM ports or private settings.
 config/*.local.json
 config/local*.json
+config/current_session.json
+local_config/
 recipes/*.local.json
+nis_cmd/local/
+nis_cmd/*_local.cmd
+*.local.cmd
 
 # -----------------------------
 # Temporary / backup files

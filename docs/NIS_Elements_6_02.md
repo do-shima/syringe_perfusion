@@ -19,49 +19,35 @@ The recommended project workflow is:
 - `.cmd` execution from NIS confirmed
 - `.cmd` execution from PowerShell confirmed
 - Pump control from both PowerShell and NIS macro confirmed
-- Current Nikon PC COM3 confirmed
-- Root directory: `D:\data\Do\Syringe_pump`
+- The actual COM port and installation directory depend on the microscope PC.
+- Set `config/pumps.json` and local `.cmd` wrappers accordingly.
 
-COM番号は環境依存です。Current Nikon PCではCOM3で動作確認済みですが、一般運用では `config/pumps.json` の `IN.port` を実COMに合わせてください。
+In this document, `<A4PUMP_ROOT>` denotes the installation folder of the built application. For example, `C:\A4PumpKit`.
+
+The actual COM port depends on the Windows PC. Check it with `list-ports` and set `config/pumps.json` accordingly. For example, set `IN.port` to `COMx`, where `COMx` is the USB-TTL adapter port shown by Windows Device Manager or `a4ctl list-ports`.
 
 ## Directory layout
 
 ```text
-D:\data\Do\Syringe_pump\
+<A4PUMP_ROOT>\
   a4ctl\
     a4ctl.exe
   config\
-    pumps.json
-    profiles.json
-    syringes.json
-    recipes.json
   nis_cmd\
-    00_check_paths.cmd
-    pump_list_ports.cmd
-    pump_test_dryrun.cmd
-    pump_write_fast30.cmd
-    pump_start_fast30.cmd
-    pump_start_fast30_async.cmd
-    pump_start_fast30_worker.cmd
-    pump_stop_all.cmd
-    pump_jog_forward_500ms.cmd
-    pump_jog_forward_500ms_dryrun.cmd
-    pump_start_after_30s_recipe.cmd
   recipes\
-    nis_start_after_30s.json
   nis_logs\
 ```
 
 ## Required files
 
-- `D:\data\Do\Syringe_pump\a4ctl\a4ctl.exe`
-- `D:\data\Do\Syringe_pump\config\pumps.json`
-- `D:\data\Do\Syringe_pump\config\profiles.json`
-- `D:\data\Do\Syringe_pump\config\syringes.json`
-- `D:\data\Do\Syringe_pump\config\recipes.json`
-- `.cmd` wrappers in `D:\data\Do\Syringe_pump\nis_cmd\`
-- Optional recipe file: `D:\data\Do\Syringe_pump\recipes\nis_start_after_30s.json`
-- Log directory: `D:\data\Do\Syringe_pump\nis_logs\`
+- `<A4PUMP_ROOT>\a4ctl\a4ctl.exe`
+- `<A4PUMP_ROOT>\config\pumps.json`
+- `<A4PUMP_ROOT>\config\profiles.json`
+- `<A4PUMP_ROOT>\config\syringes.json`
+- `<A4PUMP_ROOT>\config\recipes.json`
+- `.cmd` wrappers in `<A4PUMP_ROOT>\nis_cmd\`
+- Optional recipe file: `<A4PUMP_ROOT>\recipes\nis_start_after_30s.json`
+- Log directory: `<A4PUMP_ROOT>\nis_logs\`
 
 Run `00_check_paths.cmd` first after copying files or changing the root directory.
 
@@ -70,21 +56,25 @@ Run `00_check_paths.cmd` first after copying files or changing the root director
 NIS-Elements 6.02 runs an external file with:
 
 ```text
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_start_fast30.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_fast30.cmd");
 ```
 
-Use the exact path matching the installed folder.
+Replace `<A4PUMP_ROOT>` with the actual installation folder on the microscope PC. A generic Windows example is:
+
+```text
+Int_ExecProgram("C:\A4PumpKit\nis_cmd\pump_start_fast30.cmd");
+```
 
 If path problems occur, first test with:
 
 ```text
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_test_dryrun.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_test_dryrun.cmd");
 ```
 
 Then check:
 
 ```text
-D:\data\Do\Syringe_pump\nis_logs\nis_exec.log
+<A4PUMP_ROOT>\nis_logs\nis_exec.log
 ```
 
 Important behavior:
@@ -111,7 +101,7 @@ Use this method when imaging should continue while stimulation starts. This is t
 Example macro:
 
 ```text
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_start_fast30.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_fast30.cmd");
 ```
 
 Behavior:
@@ -149,37 +139,37 @@ This method is useful for non-imaging write or setup commands.
 Dry-run:
 
 ```text
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_test_dryrun.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_test_dryrun.cmd");
 ```
 
 Write Fast-30:
 
 ```text
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_write_fast30.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_write_fast30.cmd");
 ```
 
 Start saved Fast-30:
 
 ```text
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_start_fast30.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_fast30.cmd");
 ```
 
 Async start:
 
 ```text
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_start_fast30_async.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_fast30_async.cmd");
 ```
 
 Stop all:
 
 ```text
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_stop_all.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_stop_all.cmd");
 ```
 
 Start after 30 s using recipe:
 
 ```text
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_start_after_30s_recipe.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_after_30s_recipe.cmd");
 ```
 
 ## Preflight checklist

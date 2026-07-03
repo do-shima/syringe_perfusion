@@ -10,16 +10,31 @@ The wrappers are intentionally simple:
 - The wrappers should not depend on the NIS current directory.
 - Current `.cmd` files should be ASCII, CRLF, and no BOM.
 
-Expected Nikon PC root:
+In committed documentation and examples, use `<A4PUMP_ROOT>` for the installed application folder. A generic example root is `C:\A4PumpKit`.
+
+Recommended structure:
 
 ```text
-D:\data\Do\Syringe_pump
+<A4PUMP_ROOT>\
+  a4ctl\
+    a4ctl.exe
+  config\
+    pumps.json
+    profiles.json
+    syringes.json
+    recipes.json
+  nis_cmd\
+    pump_test_dryrun.cmd
+    pump_write_fast30.cmd
+    pump_start_fast30.cmd
+    pump_stop_all.cmd
+  nis_logs\
 ```
 
-Expected wrapper directory:
+NIS macro example:
 
 ```text
-D:\data\Do\Syringe_pump\nis_cmd
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_fast30.cmd");
 ```
 
 Run order and purpose:
@@ -36,7 +51,9 @@ Run order and purpose:
 - `pump_jog_forward_500ms_dryrun.cmd`: dry-run version of the 500 ms jog.
 - `pump_start_after_30s_recipe.cmd`: run the delayed recipe when a recipe-side wait is required.
 
-During experiments, avoid editing these files except for the deployment `ROOT` path. COM port changes should be made in `config\pumps.json`, not by hard-coding COM values in wrapper files.
+Committed examples should use `<A4PUMP_ROOT>` or a generic root such as `C:\A4PumpKit`. Local `.cmd` files may contain absolute paths, but those files should not be committed if they include user-specific paths. If local `.cmd` wrappers are needed, copy the template and edit locally.
+
+During experiments, COM port changes should be made in `config\pumps.json`, not by hard-coding COM values in wrapper files. For example, set the port to `COMx`, where `COMx` is the USB-TTL adapter port shown by Windows Device Manager or `a4ctl list-ports`.
 
 Logging is intentionally split:
 

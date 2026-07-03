@@ -1,28 +1,25 @@
-NIS-Elements 6.02 macro examples
-================================
+NIS-Elements macro examples
+===========================
 
-Use the exact path matching the installed folder.
+Replace `<A4PUMP_ROOT>` with the actual installation folder on the microscope PC.
 
-Dry-run:
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_test_dryrun.cmd");
+Dry-run test:
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_test_dryrun.cmd");
 
 Write Fast-30 before acquisition:
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_write_fast30.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_write_fast30.cmd");
 
-Start saved Fast-30:
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_start_fast30.cmd");
+Start saved Fast-30 during acquisition:
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_fast30.cmd");
 
-Async start:
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_start_fast30_async.cmd");
+Start saved Fast-30 using async wrapper:
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_fast30_async.cmd");
 
 Stop all:
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_stop_all.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_stop_all.cmd");
 
-Jog forward 500 ms:
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_jog_forward_500ms.cmd");
+Start after 30 s using a recipe:
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_after_30s_recipe.cmd");
 
-Jog forward 500 ms dry-run:
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_jog_forward_500ms_dryrun.cmd");
-
-Start after 30 s using recipe:
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_start_after_30s_recipe.cmd");
+Example:
+Int_ExecProgram("C:\A4PumpKit\nis_cmd\pump_start_fast30.cmd");

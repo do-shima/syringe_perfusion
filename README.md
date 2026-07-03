@@ -34,13 +34,16 @@ A4/QHZS系シリンジポンプをUSB-TTL UART経由で制御する軽量Python/
 - `A4PumpGUI.exe` confirmed working
 - `.cmd` wrappers confirmed from PowerShell and NIS macro
 - A4 pump control confirmed from PowerShell and NIS macro
-- USB-TTL adapter on COM3 in the current Nikon PC deployment
-- `config/pumps.json` must be edited to match the actual COM port
+- PowerShell and NIS macro execution confirmed
+- The actual COM port and installation directory depend on the microscope PC.
+- Set `config/pumps.json` and local `.cmd` wrappers accordingly.
 
-The Nikon PC deployment assumes this layout:
+In this document, `<A4PUMP_ROOT>` denotes the installation folder of the built application. For example, `C:\A4PumpKit`.
+
+Recommended structure:
 
 ```text
-D:\data\Do\Syringe_pump\
+<A4PUMP_ROOT>\
   a4ctl\
     a4ctl.exe
   config\
@@ -65,7 +68,7 @@ D:\data\Do\Syringe_pump\
   nis_logs\
 ```
 
-COM番号は環境依存です。GitHub上の例ではCOM3を固定値として扱わず、Nikon PCや実験PCごとに `config/pumps.json` の `IN.port` を実COMに合わせてください。
+The actual COM port depends on the Windows PC. Check it with `list-ports` and set `config/pumps.json` accordingly. For example, set `IN.port` to `COMx`, where `COMx` is the USB-TTL adapter port shown by Windows Device Manager or `a4ctl list-ports`.
 
 ## Hardware Connection
 
@@ -221,20 +224,29 @@ Detailed setup is documented in [docs/NIS_Elements_6_02.md](docs/NIS_Elements_6_
 NIS-Elements 6.02では、次の形式で外部ファイルを実行します。
 
 ```text
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_start_fast30.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_fast30.cmd");
 ```
+
+Replace `<A4PUMP_ROOT>` with the actual installation folder on the microscope PC.
 
 This project uses NIS to call `.cmd` files. Each `.cmd` file then calls `a4ctl.exe` with an explicit `--config-dir`, so execution does not depend on the NIS current directory.
 
 NIS `Int_ExecProgram` only launches an external file. NIS does not directly report whether the process started successfully or whether it has completed. Check `nis_logs/nis_exec.log` and `logs/a4pump_YYYYMMDD.csv` after execution. Log unification is future work.
 
+Path and COM-port policy for committed documentation:
+
+- Do not hard-code personal paths in committed documentation.
+- Use `<A4PUMP_ROOT>` in README and docs.
+- Local deployment paths should be kept only in local `.cmd` files or local notes that are not committed.
+- The actual COM port should be configured in `config/pumps.json`.
+
 Representative NIS macro examples:
 
 ```text
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_test_dryrun.cmd");
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_write_fast30.cmd");
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_start_fast30.cmd");
-Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_stop_all.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_test_dryrun.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_write_fast30.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_fast30.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_stop_all.cmd");
 ```
 
 Recommended acquisition mode:
@@ -279,7 +291,7 @@ q6h1d
 Write Fast-30 before acquisition with:
 
 ```text
-D:\data\Do\Syringe_pump\nis_cmd\pump_write_fast30.cmd
+<A4PUMP_ROOT>\nis_cmd\pump_write_fast30.cmd
 ```
 
 Profile writing does not start the pump by default. GUI `Start after write` and CLI `--start-after-write` should be used only when immediate start is intentional.
