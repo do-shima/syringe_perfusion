@@ -1,0 +1,28 @@
+NIS-Elements 6.02 macro examples
+================================
+
+Use the exact path matching the installed folder.
+
+Dry-run:
+Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_test_dryrun.cmd");
+
+Write Fast-30 before acquisition:
+Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_write_fast30.cmd");
+
+Start saved Fast-30:
+Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_start_fast30.cmd");
+
+Async start:
+Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_start_fast30_async.cmd");
+
+Stop all:
+Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_stop_all.cmd");
+
+Jog forward 500 ms:
+Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_jog_forward_500ms.cmd");
+
+Jog forward 500 ms dry-run:
+Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_jog_forward_500ms_dryrun.cmd");
+
+Start after 30 s using recipe:
+Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_start_after_30s_recipe.cmd");

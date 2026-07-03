@@ -8,22 +8,64 @@ Dependencies: Python + pyserial for source run; no Python needed for built app
 
 ## Overview
 
-A4/QHZS系シリンジポンプをUSB-TTL UART経由で制御するための軽量Pythonアプリです。V3.2では、1台運用を標準にしたGUI、manual hold、bounded jog、速度・時間設定のA4本体書き込み、プロファイル実行、Recipe Builder、CSVログ、アプリアイコン/ロゴアセット管理、PyInstaller配布をサポートします。
+A4/QHZS系シリンジポンプをUSB-TTL UART経由で制御する軽量Python/Windowsアプリです。V3.2では、GUI、CLI、Single Pump Mode、Manual Hold、Jog、速度・時間設定の書き込み、Recipe Builder、NIS-Elements連携、PyInstaller配布、アプリアイコン/アセット管理に対応しています。
 
 研究室内の顕微鏡PCや実験用Windows PCで、追加GUI依存を増やさずに動かすことを前提にしています。
 
 ## Key Features
 
-- OUTポンプを任意に有効化できるSingle-pump mode
-- 自動停止を伴うManual hold forward/reverse
-- 指定時間だけ動かして必ず停止するBounded jog
-- A4本体への速度・時間設定書き込み
-- Terumo SS-05LZ 5 mL Luer-lock用Fast-30 profile
-- Step cardsとvalidationを備えたRecipe Builder
-- 実機なしでコマンド確認できるDry-run mode
-- live / dry-run両方を残すCSV logging
-- PyInstaller one-folder Windows app build
-- 画像が無くても落ちないicon / logo asset loading
+- USB-TTL UART control for A4 syringe pump
+- Single pump mode with optional OUT pump
+- Manual hold and bounded jog
+- Write speed/time settings to A4
+- Fast-30 profile
+- Recipe Builder
+- Dry-run
+- CSV logging
+- NIS-Elements 6.02 integration via `Int_ExecProgram`
+- PyInstaller Windows app
+- Icon and logo assets
+
+## Current Validated Setup
+
+- Windows
+- NIS-Elements 6.02
+- `a4ctl.exe` called from `.cmd` files
+- `A4PumpGUI.exe` confirmed working
+- `.cmd` wrappers confirmed from PowerShell and NIS macro
+- A4 pump control confirmed from PowerShell and NIS macro
+- USB-TTL adapter on COM3 in the current Nikon PC deployment
+- `config/pumps.json` must be edited to match the actual COM port
+
+The Nikon PC deployment assumes this layout:
+
+```text
+D:\data\Do\Syringe_pump\
+  a4ctl\
+    a4ctl.exe
+  config\
+    pumps.json
+    profiles.json
+    syringes.json
+    recipes.json
+  nis_cmd\
+    00_check_paths.cmd
+    pump_list_ports.cmd
+    pump_test_dryrun.cmd
+    pump_write_fast30.cmd
+    pump_start_fast30.cmd
+    pump_start_fast30_async.cmd
+    pump_start_fast30_worker.cmd
+    pump_stop_all.cmd
+    pump_jog_forward_500ms.cmd
+    pump_jog_forward_500ms_dryrun.cmd
+    pump_start_after_30s_recipe.cmd
+  recipes\
+    nis_start_after_30s.json
+  nis_logs\
+```
+
+COM番号は環境依存です。GitHub上の例ではCOM3を固定値として扱わず、Nikon PCや実験PCごとに `config/pumps.json` の `IN.port` を実COMに合わせてください。
 
 ## Hardware Connection
 
@@ -84,22 +126,6 @@ q5h30d
 q6h1d
 ```
 
-## Installation from Source
-
-PowerShell:
-
-```powershell
-python -m pip install -r requirements.txt
-python -m pytest
-python run_gui.py
-```
-
-CLIもsource runできます。
-
-```powershell
-python -m syringe_perfusion.cli --help
-```
-
 ## Windows App Build
 
 PyInstaller one-folder build:
@@ -117,37 +143,42 @@ dist\a4ctl\a4ctl.exe
 
 Notes:
 
-- `A4PumpGUI.exe` はGUI版です。
-- `a4ctl.exe` はCLI版です。
-- `pathlib` backport packageが入っているとPyInstallerが失敗することがあります。その場合は `pip uninstall pathlib` または `conda remove pathlib` で削除してください。
-- `build/`, `dist/`, `*.spec` はbuild outputなのでGit管理対象にしません。
+- `A4PumpGUI.exe` is the GUI app.
+- `a4ctl.exe` is the CLI app used by NIS `.cmd` wrappers.
+- `assets` are included in the build.
+- `assets/icons/app.ico` is used as the executable icon if present.
+- `pathlib` backport package can break PyInstaller. If needed, remove it with `pip uninstall pathlib` or `conda remove pathlib`.
 
-## Quick Start: GUI
+## Quick Start: Source
 
-Launch:
+PowerShell:
 
 ```powershell
+python -m pip install -r requirements.txt
+python -m pytest
 python run_gui.py
 ```
 
-Built app:
+CLI source run:
+
+```powershell
+python -m syringe_perfusion.cli --help
+python -m syringe_perfusion.cli list-ports
+```
+
+## Quick Start: Built App
+
+GUI:
 
 ```powershell
 dist\A4PumpGUI\A4PumpGUI.exe
 ```
 
-Pages:
+CLI:
 
-- Dashboard: app status、connection summary、quick actions、safety statusを確認します。
-- Pumps: IN/OUT pump settings、OUT enable/disable、connection test、manual hold、jog、STOP ALLを扱います。
-- Run: 保存済みA4設定をIN onlyで開始します。OUT enabled時はOUT only、Push-pull、Two forwardも使えます。
-- Profiles: profileを選び、計算済みspeed/timeをpreviewし、A4へwriteします。必要な場合だけstart after writeを使います。
-- Calculator: speed/timeを計算し、計算結果をA4へwriteします。
-- Recipes: Block Library、Recipe Steps、Inspectorの3ペインRecipe Builderです。
-
-Manual holdは、ボタン押下中に `q6h4d` または `q6h5d` を送り、ボタン解放、カーソル離脱、auto-stop timeout、stop操作で `q6h6d` を送ります。Jogは指定msだけmanual forward/reverseを実行し、その後stopを送ります。
-
-GUIでは `Esc` でSTOP ALLを送ります。
+```powershell
+dist\a4ctl\a4ctl.exe list-ports
+```
 
 ## Quick Start: CLI
 
@@ -157,29 +188,22 @@ Serial port一覧:
 python -m syringe_perfusion.cli list-ports
 ```
 
-Manual forwardとstop:
-
-```powershell
-python -m syringe_perfusion.cli send --pump IN --action manual-forward
-python -m syringe_perfusion.cli send --pump IN --action stop
-```
-
-500 msのJog forward:
-
-```powershell
-python -m syringe_perfusion.cli jog --pump IN --direction forward --duration-ms 500
-```
-
 Fast-30 settingsを書き込む:
 
 ```powershell
 python -m syringe_perfusion.cli write-profile --pump IN --profile fast30_1ml --save
 ```
 
-保存済みprofileを開始:
+保存済みFast-30 profileを開始:
 
 ```powershell
 python -m syringe_perfusion.cli run-profile --pump IN --profile fast30_1ml
+```
+
+500 msのJog forward:
+
+```powershell
+python -m syringe_perfusion.cli jog --pump IN --direction forward --duration-ms 500
 ```
 
 有効な全pumpを停止:
@@ -190,17 +214,58 @@ python -m syringe_perfusion.cli stop-all
 
 `--dry-run` を付けると、serial portを開かずにoutgoing commandsを確認できます。
 
+## NIS-Elements Integration Summary
+
+Detailed setup is documented in [docs/NIS_Elements_6_02.md](docs/NIS_Elements_6_02.md). The `.cmd` wrapper policy is documented in [nis_cmd/README.md](nis_cmd/README.md). Macro-only examples are in [docs/NIS_macro_examples.txt](docs/NIS_macro_examples.txt).
+
+NIS-Elements 6.02では、次の形式で外部ファイルを実行します。
+
+```text
+Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_start_fast30.cmd");
+```
+
+This project uses NIS to call `.cmd` files. Each `.cmd` file then calls `a4ctl.exe` with an explicit `--config-dir`, so execution does not depend on the NIS current directory.
+
+NIS `Int_ExecProgram` only launches an external file. NIS does not directly report whether the process started successfully or whether it has completed. Check `nis_logs/nis_exec.log` and `logs/a4pump_YYYYMMDD.csv` after execution. Log unification is future work.
+
+Representative NIS macro examples:
+
+```text
+Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_test_dryrun.cmd");
+Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_write_fast30.cmd");
+Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_start_fast30.cmd");
+Int_ExecProgram("D:\data\Do\Syringe_pump\nis_cmd\pump_stop_all.cmd");
+```
+
+Recommended acquisition mode:
+
+- Use ND Acquisition Advanced.
+- Select `Advanced for` Time Phase 2.
+- Insert the macro in `Execute before Time phase`.
+- Use two time phases when imaging should continue during stimulation.
+- `pump_start_fast30.cmd` runs immediately before Time Phase 2, and Time Phase 2 imaging continues.
+
+Alternative acquisition mode:
+
+- Use three time phases.
+- Set Phase 2 to `No Acquisition`.
+- Insert the macro in `Execute before Time phase` for Phase 2.
+- Use this when imaging should stop during external command execution, or when an explicit non-imaging phase is needed.
+
+NIS external program launch has a small lag. Measure actual liquid arrival timing with dye and align analysis to the observed arrival frame.
+
 ## Fast-30 Profile
 
-Fast-30は、確認済みシリンジで1 mL / 30 secを狙うreference profileです。
+Fast-30 is a reference profile targeting 1 mL / 30 sec with the confirmed syringe.
 
 - Syringe: Terumo SS-05LZ 5 mL Luer-lock
 - Speed: 15.37 mm/min
 - Duration: 30 sec
+- Target volume: 1000 uL
 - Measured mass: 1.001, 1.007, 0.994, 1.000, 1.007 g
 - Average: about 1.002 g
 
-このprofileのsettings write commands:
+Settings write commands:
 
 ```text
 q1h15d
@@ -211,38 +276,36 @@ q5h30d
 q6h1d
 ```
 
-Profile writingはデフォルトではpumpを開始しません。GUIでは `Start after write`、CLIでは `--start-after-write` を使えますが、明示的に開始したい場合だけ使ってください。
+Write Fast-30 before acquisition with:
 
-## Single-Pump and OUT Pump Mode
+```text
+D:\data\Do\Syringe_pump\nis_cmd\pump_write_fast30.cmd
+```
 
-GUIはINだけを有効にしたsingle-pump operationをサポートします。
+Profile writing does not start the pump by default. GUI `Start after write` and CLI `--start-after-write` should be used only when immediate start is intentional.
 
-- OUT disabledは1台運用の標準的なmodeです。
-- OUT disabledではOUT COM portは空欄で構いません。
-- OUT enabledではOUT COM portが必須です。
-- OUT only、Push-pull、Two forwardはOUT enabled時だけ使えます。
-- Recipe Builderはdry-run / run前にdisabled pumpの使用を検出します。
+## Single Pump Mode
 
-Pump enable stateは `config/pumps.json` に保存され、Pumps pageからも変更できます。
+GUI supports IN-only single pump operation.
+
+- OUT disabled is the default for one-pump operation.
+- OUT COM may be blank when OUT is disabled.
+- OUT COM is required when OUT is enabled.
+- Push-pull, OUT only, and Two forward require OUT enabled.
+- STOP ALL skips disabled pumps.
+- Recipe Builder validates disabled pump usage before dry-run and run.
+
+Pump enable state is stored in `config/pumps.json` and can also be changed from the GUI.
 
 ## Recipe Builder
 
-V3.2 Recipe Builderは3ペイン構成です。
+V3.2 Recipe Builder has three main areas:
 
-- Block Library: recipe blockを追加します。
-- Recipe Steps: card-style step listで手順を確認します。
-- Inspector: selected blockを編集し、validation messagesを確認します。
+- Block Library
+- Recipe Steps
+- Inspector
 
-対応操作:
-
-- Add block
-- Select and edit block
-- Move Up / Down
-- Duplicate
-- Delete
-- Validate
-- Dry-run
-- Run
+Recipe Steps uses step cards for editing and review. Recipes can be validated, dry-run, and run. Disabled pump validation runs before execution.
 
 Available block types:
 
@@ -258,24 +321,20 @@ OUT disabled時にOUTを使うrecipeは、実行前のvalidationでエラーに�
 
 ## Logging
 
-Command logsは次に保存されます。
+Current logging is intentionally split:
 
-```text
-logs/a4pump_YYYYMMDD.csv
-```
+1. `nis_logs/nis_exec.log`
+   - Created by `.cmd` wrappers.
+   - Records NIS-side execution start/end and exit code.
+2. `logs/a4pump_YYYYMMDD.csv`
+   - Created by `a4ctl` and `A4PumpGUI`.
+   - Records pump commands, profiles, dry-run, command hex, responses, recipe IDs, and block IDs.
 
-Dry-run commandsもログに残ります。重要な列:
-
-```text
-timestamp, pump, port, command, outgoing_hex, response, mode,
-profile, speed_mm_min, duration_s, recipe_id, block_id
-```
-
-ログは実験時のcommand historyとdry-run verificationを残すためのものです。
+Do not treat these as one combined log. Log unification is future work and is planned for a future version.
 
 ## Application Icon and Assets
 
-V3.2ではapplication iconとlogoのstatic asset loadingを追加しています。
+V3.2 includes application icon and logo asset loading.
 
 ```text
 assets/
@@ -283,7 +342,7 @@ assets/
   logo/
 ```
 
-画像が無い場合もappは安全に無視して起動します。PNG icon/logoが存在すればGUIが読み込みます。PyInstaller buildでは `assets` directoryを同梱し、`assets/icons/app.ico` が存在する場合だけexecutable iconとして使います。
+PNG icon/logo files are loaded by the GUI when present. PyInstaller includes the `assets` directory and uses `assets/icons/app.ico` as the executable icon when present.
 
 Recommended app icon direction:
 
@@ -294,14 +353,17 @@ Recommended app icon direction:
 - Export PNG sizes under `assets/icons/` and a Windows ICO as `assets/icons/app.ico`.
 - Put larger logo images under `assets/logo/`.
 
-## Safety Notes
+## Safety
 
-- 初回確認はシリンジなし、または空シリンジで行ってください。
-- Manual hold / jogでは、Stop、auto-stop、Esc停止が動作することを確認してください。
-- 実液体ラインでは、針位置、廃液先、閉塞、ライン接続を確認してから実行してください。
-- `Start after write` is OFF by default. Keep it OFF unless immediate start is intentional.
-- GUIではSTOP ALLボタンとEscキーで停止できます。
-- A4 `V` pin must not be connected.
+- First test without syringe or with an empty syringe.
+- Confirm the COM port before each experiment day.
+- Write Fast-30 before acquisition.
+- Confirm A4 LCD speed/time.
+- Check tubing, priming, needle position, and waste path.
+- Use STOP ALL and Esc.
+- Measure actual liquid arrival delay using dye.
+- NIS external program launch has a small lag.
+- A4 `V` pin must not be connected to USB-TTL power.
 
 ## Project Structure
 
@@ -311,6 +373,8 @@ syringe_perfusion/
   config/
   recipes/
   assets/
+  docs/
+  nis_cmd/
   scripts/
   tests/
 ```
@@ -318,16 +382,18 @@ syringe_perfusion/
 Main entry points:
 
 - `run_gui.py`: GUI application
-- `run_cli.py`: PyInstaller用CLI entry point
-- `python -m syringe_perfusion.cli`: source run用CLI
+- `run_cli.py`: PyInstaller CLI entry point
+- `python -m syringe_perfusion.cli`: source-run CLI
 
 ## Development Status
 
 - Version: V3.2
 - Tests: pytest 57 passed
 - GUI exe build confirmed
-- A4 actual command sending confirmed
+- NIS macro execution confirmed
+- PowerShell and NIS macro both confirmed to control pump
 - Tested command behavior: lowercase ASCII with CRLF over 9600 baud USB-TTL UART
+- Log unification pending
 
 ## Version History
 
@@ -335,5 +401,6 @@ Main entry points:
 - V2: Recipe Builder.
 - V2.1: single-pump mode and settings writer.
 - V3.0: left navigation and card UI.
-- V3.1: UI polish and step cards.
-- V3.2: icon/assets and PyInstaller app metadata.
+- V3.1: UI polish.
+- V3.2: icon/assets and NIS-ready Windows app.
+- V3.3 or future: log unification.
