@@ -100,7 +100,39 @@ def persist_active_config_dir(
     target = Path(settings_file) if settings_file is not None else user_settings_path(environ)
     target = target.expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write_json(target, {"active_config_dir": str(Path(config_path).expanduser().resolve())}, backup=False)
+    data = load_user_settings(settings_file=target, environ=environ)
+    data["active_config_dir"] = str(Path(config_path).expanduser().resolve())
+    _atomic_write_json(target, data, backup=False)
+    return target
+
+
+def load_user_settings(
+    *,
+    settings_file: str | Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    target = Path(settings_file) if settings_file is not None else user_settings_path(environ)
+    try:
+        return load_json(target)
+    except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def persist_ui_preferences(
+    preferences: Mapping[str, Any],
+    *,
+    settings_file: str | Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    target = Path(settings_file) if settings_file is not None else user_settings_path(environ)
+    target = target.expanduser().resolve()
+    data = load_user_settings(settings_file=target, environ=environ)
+    ui = data.get("ui_preferences")
+    if not isinstance(ui, dict):
+        ui = {}
+    ui.update(dict(preferences))
+    data["ui_preferences"] = ui
+    _atomic_write_json(target, data, backup=False)
     return target
 
 

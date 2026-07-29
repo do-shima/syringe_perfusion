@@ -1,17 +1,19 @@
-NIS-Elements macro examples
-===========================
+NIS-Elements armed perfusion macro examples
+============================================
 
 Replace <A4PUMP_ROOT> with the installation folder on the microscope PC.
-The wrappers read COM ports from <A4PUMP_ROOT>\config\pumps.json.
+COM ports come only from <A4PUMP_ROOT>\config\pumps.json.
 
-Write IN and OUT profiles:
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_write_in_out.cmd");
+Preferred: start the already-programmed ARMED plan immediately:
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_armed.cmd");
 
-Start push-pull Fast-30:
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_pushpull_fast30.cmd");
+Schedule the ARMED plan after 300 seconds; the wrapper returns promptly:
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_armed_after_300s.cmd");
 
-Stop all:
+Cancel a pending scheduled start:
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_cancel_pending.cmd");
+
+Cancel pending work and stop all enabled pumps:
 Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_stop_all.cmd");
 
-Generic example:
-Int_ExecProgram("C:\A4PumpKit\nis_cmd\pump_stop_all.cmd");
+Legacy profile wrappers remain available for compatibility.

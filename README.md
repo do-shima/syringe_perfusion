@@ -42,6 +42,78 @@ a4ctl.exe config-path --json
 
 GUIで別のActive Configを選んだ場合、CLI省略時のresolverはその保存済み選択を使います。一方、NIS wrapperは再現性のため常に `--config-dir` を明示するので、Setup画面の `Copy NIS CFG line` でwrapperのCFGも同じ場所へ合わせてください。
 
+## Armed perfusion flow control
+
+Experiment is the primary operational screen. Its safe workflow is:
+
+1. Scan ports and select independent IN and OUT devices.
+2. Test IN and OUT by opening/closing each port; connection tests send no pump command.
+3. Choose Fixed volume, Fixed duration, or Bounded continuous.
+4. Set IN flow with the exact numeric entry or convenience slider.
+5. Select IN/OUT syringes and review the quantized preview.
+6. Switch from DRY-RUN to LIVE.
+7. Select **PROGRAM / ARM BOTH**.
+8. Confirm **PROGRAMMED — NOT READ BACK**.
+9. Start acquisition and call an armed NIS wrapper.
+10. Use GUI **STOP ALL**, Esc, or `pump_stop_all.cmd` to cancel/stop.
+
+The numeric flow entry is authoritative. The 0.1–3.0 mL/min slider, ±0.1 buttons, and preset buttons update preview only; slider movement sends no UART commands and does not rewrite `profiles.json`. An exact value outside the visible slider range is retained when it is within device limits.
+
+Calculation modes:
+
+- **Fixed volume**: IN flow and target IN volume determine the common duration.
+- **Fixed duration**: IN flow and duration determine expected volume.
+- **Bounded continuous**: requires a maximum duration; unbounded operation is rejected.
+
+IN is calculated for forward operation and OUT for reverse operation. OUT ratio lock defaults to 1.00. It can be changed to values such as 0.90/1.10, or disabled for independent OUT flow. Unequal flow can change dish volume. IN and OUT use their own syringe calibration and the same quantized duration.
+
+Preview and programming reuse the verified A4 `ROUND_HALF_UP` resolution:
+
+- speed: 0.01–150.00 mm/min, 0.01 mm/min increments
+- duration: 1 second–99:59:59, whole seconds
+
+The preview shows requested flow, programmed speed/duration, estimated actual flow/volume, quantization difference, and exact UART commands.
+
+### Shared runtime state
+
+Armed and pending state is shared by GUI, CLI, and NIS under the same Active Config:
+
+```text
+<ACTIVE_CONFIG>\runtime\perfusion_state.json
+<ACTIVE_CONFIG>\runtime\pending_run.json
+<ACTIVE_CONFIG>\runtime\run.lock
+<ACTIVE_CONFIG>\runtime\protocol_runner.log
+```
+
+The runtime directory is created only when needed, is not a fifth required config file, is not packaged, and is preserved by rebuilds. Runtime JSON uses atomic UTF-8 writes.
+
+State transitions include:
+
+```text
+DIRTY -> PROGRAMMING -> ARMED -> PENDING -> STARTING -> STARTED
+STARTED -> STOPPED
+any operational state -> FAULT
+```
+
+PROGRAM / ARM first stops enabled pumps, programs/saves OUT, then programs/saves IN. `ARMED` is persisted only after both complete. The pump does not provide verified setting readback, so the UI deliberately says **PROGRAMMED — NOT READ BACK**. Any partial programming/start failure attempts STOP on both pumps and records `FAULT`.
+
+Changing ports, serial settings, syringes, flow/mode, ratio, duration/volume, delay, relevant config, or Active Config invalidates the shared state to `DIRTY`. NIS therefore cannot start a stale GUI plan.
+
+### Armed CLI commands
+
+```powershell
+a4ctl.exe --config-dir "<CFG>" arm-status
+a4ctl.exe --config-dir "<CFG>" arm-status --json
+a4ctl.exe --config-dir "<CFG>" start-armed --dish-id NIS --condition perfusion --trigger-source NIS
+a4ctl.exe --config-dir "<CFG>" schedule-armed --delay-s 300 --dish-id NIS --condition perfusion_delayed --trigger-source NIS
+a4ctl.exe --config-dir "<CFG>" cancel-pending
+a4ctl.exe --config-dir "<CFG>" stop-all
+```
+
+`start-armed` sends only the persisted IN-forward and OUT-reverse start commands; it does not recalculate or rewrite settings. `schedule-armed` launches a detached worker and returns a run ID promptly. Both the start delay and IN-to-OUT delay are cancellable. STOP ALL cancels pending state before attempting parallel STOP commands and prevents a delayed OUT start.
+
+No speed is changed while RUNNING/STARTED. This milestone intentionally has no live-flow adjustment.
+
 ## Key Features
 
 - USB-TTL UART control for A4 syringe pump
@@ -85,6 +157,9 @@ Recommended structure:
   nis_cmd\
     00_check_paths.cmd
     pump_test_dryrun.cmd
+    pump_start_armed.cmd
+    pump_start_armed_after_300s.cmd
+    pump_cancel_pending.cmd
     pump_write_in_out.cmd
     pump_start_pushpull_fast30.cmd
     pump_stop_all.cmd
@@ -272,8 +347,9 @@ Path and COM-port policy for committed documentation:
 Representative NIS macro examples:
 
 ```text
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_write_in_out.cmd");
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_pushpull_fast30.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_armed.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_armed_after_300s.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_cancel_pending.cmd");
 Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_stop_all.cmd");
 ```
 
@@ -341,7 +417,7 @@ Pump enable state is stored in `config/pumps.json` and can also be changed from 
 
 ## GUI layout
 
-- **Experiment**: LIVE / DRY-RUN、共有config、IN/OUT状態、run mode、profiles、Write IN + OUT profiles、START、STOP ALL、直近ログ。
+- **Experiment**: port scan、flow setpoint、量子化preview、PROGRAM / ARM BOTH、START ARMED、STOP ALL、共有runtime state。
 - **Setup**: Active Configの完全パスとsource、CLI共有状態、NIS CFG、COM/baudrate/terminator/timeout、安全保存・Reload、接続テスト、Manual/Jog。
 - **Advanced**: Profiles、Calculator、Recipes。低頻度項目はスクロール可能です。
 
@@ -438,10 +514,9 @@ Main entry points:
 ## Development Status
 
 - Version: V3.2
-- Tests: pytest 72 passed
-- GUI exe build confirmed
-- NIS macro execution confirmed
-- PowerShell and NIS macro both confirmed to control pump
+- Tests: run `python -m pytest -q` to verify the current checkout
+- GUI/CLI one-folder build and NIS wrapper DRY-RUN confirmed
+- Live pump control and actual NIS `Int_ExecProgram` behavior require hardware validation
 - Tested command behavior: lowercase ASCII with CRLF over 9600 baud USB-TTL UART
 - Log unification pending
 

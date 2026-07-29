@@ -4,10 +4,10 @@ from syringe_perfusion.config import load_config
 
 
 def test_dry_run_send_returns_log_dict() -> None:
-    pump = A4Pump(name="IN", port="COM5", dry_run=True)
+    pump = A4Pump(name="IN", port="COM_TEST", dry_run=True)
     result = pump.start_forward()
     assert result["pump"] == "IN"
-    assert result["port"] == "COM5"
+    assert result["port"] == "COM_TEST"
     assert result["command"] == "q6h2d"
     assert result["response"] == "DRY_RUN"
     assert result["dry_run"] is True

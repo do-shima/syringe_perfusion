@@ -218,19 +218,25 @@ def pump_from_config(pump_key: str, pump_config: dict[str, Any], *, dry_run: boo
     )
 
 
-def list_serial_ports() -> list[dict[str, str]]:
+def list_serial_ports() -> list[dict[str, Any]]:
     try:
         from serial.tools import list_ports
     except ImportError:
         return []
 
-    ports = []
+    ports: list[dict[str, Any]] = []
     for port in list_ports.comports():
         ports.append(
             {
                 "device": port.device,
                 "description": port.description,
                 "hwid": port.hwid,
+                "manufacturer": getattr(port, "manufacturer", None),
+                "product": getattr(port, "product", None),
+                "serial_number": getattr(port, "serial_number", None),
+                "vid": getattr(port, "vid", None),
+                "pid": getattr(port, "pid", None),
+                "location": getattr(port, "location", None),
             }
         )
     return ports

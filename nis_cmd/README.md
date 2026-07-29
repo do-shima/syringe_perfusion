@@ -1,24 +1,20 @@
 # NIS cmd wrappers
 
-These wrappers use the single Active Config at `<A4PUMP_ROOT>\config`. Every wrapper resolves ROOT from its own location, sets `CFG=%ROOT%\config`, logs that path, and passes `--config-dir "%CFG%"` to `a4ctl.exe`.
-
-Primary NIS macros:
+Preferred armed workflow:
 
 ```text
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_write_in_out.cmd");
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_pushpull_fast30.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_armed.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_armed_after_300s.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_cancel_pending.cmd");
 Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_stop_all.cmd");
 ```
 
-Available wrappers:
+- `pump_start_armed.cmd`: start the already-programmed ARMED plan; no recalculation or setting write.
+- `pump_start_armed_after_300s.cmd`: schedule a detached start after 300 seconds and return promptly.
+- `pump_cancel_pending.cmd`: atomically cancel a pending start.
+- `pump_stop_all.cmd`: cancel pending, then independently attempt STOP on all enabled pumps.
+- `00_check_paths.cmd`, `pump_test_dryrun.cmd`, and legacy profile/jog wrappers remain available.
 
-- `00_check_paths.cmd`: validate executable and all four JSON files; log `config-path`.
-- `pump_test_dryrun.cmd`: dry-run STOP ALL without opening serial ports.
-- `pump_list_ports.cmd`: record detected ports.
-- `pump_write_in_out.cmd`: write IN then OUT profiles; OUT is skipped if IN fails.
-- `pump_start_pushpull_fast30.cmd`: start the coordinated push-pull mode.
-- `pump_stop_all.cmd`: stop all enabled pumps.
-- `pump_write_fast30.cmd`, `pump_start_fast30.cmd`: IN-only compatibility operations.
-- `pump_jog_forward_500ms.cmd` and `_dryrun.cmd`: bounded setup jog.
+All wrappers resolve ROOT from `%~dp0`, use `%ROOT%\config`, call `%ROOT%\a4ctl\a4ctl.exe`, log CONFIG/START/END/exit, redirect output, use ASCII CRLF, contain no continuation `^`, and contain no COM number or personal path.
 
-Tracked wrappers are ASCII/CRLF, contain no `^` continuation, use one a4ctl command per line, and contain neither personal paths nor COM numbers. Configure COM ports in the shared `config\pumps.json` through GUI Setup.
+GUI, CLI, and NIS share runtime state below `%ROOT%\config\runtime`. Do not edit `_internal\default_config`. The pump does not provide verified setting readback: use the GUI wording **PROGRAMMED — NOT READ BACK** and complete physical validation before experiments.

@@ -1,92 +1,98 @@
-# NIS-Elements 6.02 integration
+# NIS-Elements 6.02 armed perfusion integration
 
-## Shared Active Config
+## Preferred workflow
 
-NIS-Elements runs a tracked `.cmd` wrapper with `Int_ExecProgram`. The wrapper calls `a4ctl.exe` and always passes the same external config used by the standard GUI installation:
+NIS starts a plan that the GUI has already calculated, programmed, and atomically armed. NIS does not recalculate flow and does not rewrite q1/q2/q3/q4/q5/q6h1 settings.
+
+1. Start GUI and scan serial ports.
+2. Select independent IN and OUT ports and test each.
+3. Choose Fixed volume, Fixed duration, or bounded continuous flow.
+4. Review programmed speed/duration and exact UART commands.
+5. Switch from DRY-RUN to LIVE.
+6. Select **PROGRAM / ARM BOTH**.
+7. Confirm **PROGRAMMED — NOT READ BACK**.
+8. Start NIS acquisition.
+9. Trigger an immediate or delayed armed wrapper.
+10. Use STOP ALL for cancellation or emergency stop.
+
+The A4 has no verified speed/time readback. PROGRAMMED means the write sequence completed without an I/O exception; it is not independent device verification.
+
+## Shared state and config
+
+Every wrapper resolves:
 
 ```bat
 for %%I in ("%~dp0..") do set "ROOT=%%~fI"
 set "A4=%ROOT%\a4ctl\a4ctl.exe"
 set "CFG=%ROOT%\config"
-set "LOGDIR=%ROOT%\nis_logs"
-set "LOG=%LOGDIR%\nis_exec.log"
 ```
 
-`CFG` contains `pumps.json`, `profiles.json`, `syringes.json`, and `recipes.json`. These four files are managed as one directory. Do not create `nis_cmd\config`, do not edit `_internal\default_config`, and do not hard-code COM ports in wrappers.
-
-GUI Setup displays the Active Config and provides `Copy NIS CFG line`. If the GUI is switched away from `<A4PUMP_ROOT>\config`, update the NIS wrapper CFG deployment to the same path. Confirm both sides with:
-
-```powershell
-<A4PUMP_ROOT>\a4ctl\a4ctl.exe --config-dir "<A4PUMP_ROOT>\config" config-path
-```
-
-## Distribution
+GUI, CLI, and NIS share the four JSON config files and:
 
 ```text
-<A4PUMP_ROOT>\
-  A4PumpGUI.exe
-  a4ctl\
-    a4ctl.exe
-  config\
-    pumps.json
-    profiles.json
-    syringes.json
-    recipes.json
-  nis_cmd\
-    00_check_paths.cmd
-    pump_test_dryrun.cmd
-    pump_write_in_out.cmd
-    pump_start_pushpull_fast30.cmd
-    pump_stop_all.cmd
-  nis_logs\
-  _internal\
+<CFG>\runtime\perfusion_state.json
+<CFG>\runtime\pending_run.json
+<CFG>\runtime\run.lock
+<CFG>\runtime\protocol_runner.log
 ```
 
-The actual COM names differ on each PC. Configure them in GUI Setup and save to `<A4PUMP_ROOT>\config\pumps.json`. The public defaults and wrappers do not contain the local IN/OUT COM numbers.
+Do not edit `_internal\default_config`; it is only an initial copy source. COM names are environment-specific and belong in the external `pumps.json`, never in tracked wrappers.
 
-## Macro examples
+## NIS macros
+
+Immediate start:
 
 ```text
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_write_in_out.cmd");
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_pushpull_fast30.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_armed.cmd");
+```
+
+Start after 300 seconds:
+
+```text
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_armed_after_300s.cmd");
+```
+
+The delayed wrapper calls `schedule-armed --delay-s 300`. The CLI starts a detached worker and returns promptly; NIS is not kept in a five-minute blocking call.
+
+Cancel pending:
+
+```text
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_cancel_pending.cmd");
+```
+
+Cancel pending and stop both:
+
+```text
 Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_stop_all.cmd");
 ```
 
-Generic Windows example:
+STOP ALL updates shared cancellation state before sending STOP. A waiting worker checks its unique run ID and exits without starting if the plan was changed or cancelled. Cancellation during IN-to-OUT delay stops IN and prevents OUT start.
 
-```text
-Int_ExecProgram("C:\A4PumpKit\nis_cmd\pump_stop_all.cmd");
+## Validation and failure behavior
+
+Before start, the CLI checks:
+
+- state is exactly ARMED (or the matching scheduled PENDING run);
+- config fingerprint still matches;
+- IN and OUT remain enabled on different ports;
+- both selected ports are currently detected;
+- HWID matches when both stored and current values are available;
+- no duplicate run lock exists.
+
+OUT start failure after IN start triggers STOP attempts for both and records FAULT. Slider movement never sends UART commands. Speed is not changed after STARTED.
+
+Inspect:
+
+```powershell
+<A4PUMP_ROOT>\a4ctl\a4ctl.exe --config-dir "<A4PUMP_ROOT>\config" arm-status
 ```
 
-Run `00_check_paths.cmd` and `pump_test_dryrun.cmd` before live use. Check `<A4PUMP_ROOT>\nis_logs\nis_exec.log`; every wrapper records `CONFIG=<CFG>`, command output/error, and exit code.
+Wrapper START/END/config/exit logs are in `nis_logs\nis_exec.log`; protocol state transitions are in `config\runtime\protocol_runner.log`.
 
-## Wrapper rules
+## Wrapper format
 
-- Resolve ROOT from `%~dp0`; never depend on the NIS current directory.
-- Always use `--config-dir "%CFG%"`.
-- One `a4ctl` command per physical line.
-- Never use the batch continuation character `^`.
-- Store tracked files as ASCII and CRLF.
-- Do not include personal paths or COM numbers.
-- Return the `a4ctl` exit code.
-- In `pump_write_in_out.cmd`, an IN failure prevents the OUT write.
+Tracked `.cmd` files are ASCII/CRLF, contain no continuation `^`, use one a4ctl command per line, and contain no personal paths or COM numbers. Legacy profile wrappers remain for compatibility, but the armed workflow is preferred.
 
-## Experiment workflow
+## Hardware checks still required
 
-1. Open GUI Setup, select and save the IN/OUT ports.
-2. Confirm GUI Active Config is `<A4PUMP_ROOT>\config`.
-3. Run `00_check_paths.cmd`.
-4. Run `pump_test_dryrun.cmd`.
-5. Run `pump_write_in_out.cmd` and verify both A4 displays.
-6. Let NIS call `pump_start_pushpull_fast30.cmd` at the chosen phase boundary.
-7. Use `pump_stop_all.cmd` when required.
-
-NIS only launches the external wrapper; it does not directly confirm completion. External launch has a small lag, so validate liquid-arrival timing with a dye test.
-
-## Safety
-
-- Verify IN and OUT are different USB serial ports.
-- Confirm tubing, priming, syringe direction, and waste path.
-- Start with dry-run and a non-biological setup.
-- Keep GUI STOP ALL / Esc and `pump_stop_all.cmd` available.
-- Actual UART/live behavior requires an explicit hardware test and is not exercised by pytest.
+Automated tests do not open a real serial port. Validate pump directions, water-weight flow, simultaneous liquid level, STOP behavior, delayed cancellation, actual NIS `Int_ExecProgram`, and Windows 125%/150% scaling on the microscope PC.

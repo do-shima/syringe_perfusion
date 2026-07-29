@@ -152,17 +152,17 @@ def test_save_reload_preserves_unknown_keys_commands_and_creates_backup(tmp_path
 
     saved = save_pump_settings(
         active,
-        in_port=" COM5 ",
+        in_port=" COM_A ",
         out_enabled=True,
-        out_port=" COM4 ",
+        out_port=" COM_B ",
         baudrate="9600",
         terminator="\\r\\n",
         timeout="1.5",
     )
     reloaded_document = json.loads(saved.read_text(encoding="utf-8"))
     loaded = load_config(active)
-    assert loaded["pumps"]["IN"]["port"] == "COM5"
-    assert loaded["pumps"]["OUT"]["port"] == "COM4"
+    assert loaded["pumps"]["IN"]["port"] == "COM_A"
+    assert loaded["pumps"]["OUT"]["port"] == "COM_B"
     assert loaded["pumps"]["OUT"]["enabled"] is True
     assert reloaded_document["site_extension"] == {"keep": True}
     assert reloaded_document["pumps"]["IN"]["unknown"] == "keep"
@@ -177,9 +177,9 @@ def test_same_enabled_com_and_read_only_are_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="different COM"):
         save_pump_settings(
             active,
-            in_port="COM5",
+            in_port="COM_A",
             out_enabled=True,
-            out_port="com5",
+            out_port="com_a",
             baudrate=9600,
             terminator="\\r\\n",
             timeout=1,
@@ -196,9 +196,9 @@ def test_same_enabled_com_and_read_only_are_rejected(tmp_path: Path) -> None:
     with pytest.raises(PermissionError, match="read-only"):
         save_pump_settings(
             read_only,
-            in_port="COM5",
+            in_port="COM_A",
             out_enabled=True,
-            out_port="COM4",
+            out_port="COM_B",
             baudrate=9600,
             terminator="\\r\\n",
             timeout=1,

@@ -7,9 +7,10 @@ set "LOGDIR=%ROOT%\nis_logs"
 set "LOG=%LOGDIR%\nis_exec.log"
 if not exist "%LOGDIR%" mkdir "%LOGDIR%"
 echo [%DATE% %TIME%] CONFIG=%CFG% >> "%LOG%"
-echo [%DATE% %TIME%] START pump_list_ports >> "%LOG%"
+echo [%DATE% %TIME%] START pump_cancel_pending >> "%LOG%"
 if not exist "%A4%" (echo ERROR: missing %A4% >> "%LOG%" & exit /b 2)
-"%A4%" --config-dir "%CFG%" list-ports >> "%LOG%" 2>&1
+if not exist "%CFG%\pumps.json" (echo ERROR: missing pumps.json >> "%LOG%" & exit /b 3)
+"%A4%" --config-dir "%CFG%" cancel-pending >> "%LOG%" 2>&1
 set "RC=%ERRORLEVEL%"
-echo [%DATE% %TIME%] END pump_list_ports EXIT=%RC% >> "%LOG%"
+echo [%DATE% %TIME%] END pump_cancel_pending EXIT=%RC% >> "%LOG%"
 exit /b %RC%

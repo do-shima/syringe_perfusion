@@ -7,9 +7,10 @@ set "LOGDIR=%ROOT%\nis_logs"
 set "LOG=%LOGDIR%\nis_exec.log"
 if not exist "%LOGDIR%" mkdir "%LOGDIR%"
 echo [%DATE% %TIME%] CONFIG=%CFG% >> "%LOG%"
+echo [%DATE% %TIME%] START pump_jog_forward_500ms >> "%LOG%"
 if not exist "%A4%" (echo ERROR: missing %A4% >> "%LOG%" & exit /b 2)
 if not exist "%CFG%\pumps.json" (echo ERROR: missing pumps.json >> "%LOG%" & exit /b 3)
 "%A4%" --config-dir "%CFG%" jog --pump IN --direction forward --duration-ms 500 --dish-id NIS --condition jog_forward --trigger-source NIS >> "%LOG%" 2>&1
 set "RC=%ERRORLEVEL%"
-echo [%DATE% %TIME%] EXIT=%RC% >> "%LOG%"
+echo [%DATE% %TIME%] END pump_jog_forward_500ms EXIT=%RC% >> "%LOG%"
 exit /b %RC%

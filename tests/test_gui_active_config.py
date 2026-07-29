@@ -30,14 +30,14 @@ def test_gui_save_and_external_edit_reload_use_same_active_config(
         app.config_resolution = validate_config_directory(active)
         assert app.reload_from_json(confirm=False)
 
-        app.port_vars["IN"].set(" COM5 ")
-        app.port_vars["OUT"].set(" COM4 ")
+        app.port_vars["IN"].set(" COM_A ")
+        app.port_vars["OUT"].set(" COM_B ")
         app.out_enabled_var.set(True)
         saved = app.save_pump_settings_gui()
         assert saved == (active / "pumps.json").resolve()
         cli_data = load_config(active)
-        assert cli_data["pumps"]["IN"]["port"] == "COM5"
-        assert cli_data["pumps"]["OUT"]["port"] == "COM4"
+        assert cli_data["pumps"]["IN"]["port"] == "COM_A"
+        assert cli_data["pumps"]["OUT"]["port"] == "COM_B"
         assert cli_data["pumps"]["OUT"]["enabled"] is True
 
         document = json.loads(saved.read_text(encoding="utf-8"))
@@ -70,6 +70,6 @@ def test_experiment_primary_actions_and_global_stop_exist_at_small_geometry() ->
 def test_port_candidates_are_union_deduplicated_and_naturally_sorted() -> None:
     assert merge_port_candidates(
         ["COM10", "COM2", "COM2"],
-        ["COM5", "COM40"],
-        [" COM4 ", "COM5"],
-    ) == ["COM2", "COM4", "COM5", "COM10", "COM40"]
+        ["COM7", "COM40"],
+        [" COM3 ", "COM7"],
+    ) == ["COM2", "COM3", "COM7", "COM10", "COM40"]

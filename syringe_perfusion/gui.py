@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import threading
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable
@@ -12,11 +14,27 @@ from typing import Any, Callable
 from .a4 import DEFAULT_COMMANDS, format_settings_commands, list_serial_ports
 from .app_info import APP_NAME, APP_SHORT_NAME, APP_VERSION
 from .assets import find_asset, load_tk_image, set_window_icon
-from .cli import pushpull, run_profile, send_action, stop_all, write_profile, write_settings
+from .flow_control import PerfusionSetpoint, build_perfusion_setpoint
+from .operations import (
+    get_arm_status,
+    program_pair,
+    pushpull,
+    run_profile,
+    send_action,
+    start_armed_pair,
+    stop_all,
+    stop_all_safe,
+    write_profile,
+    write_settings,
+)
+from .perfusion_state import config_fingerprint, invalidate_armed, read_state
+from .port_scan import merge_port_devices, scan_serial_ports
 from .config import (
     ConfigResolution,
     load_config,
+    load_user_settings,
     persist_active_config_dir,
+    persist_ui_preferences,
     resolve_config,
     save_pump_settings,
     validate_config_directory,
@@ -54,6 +72,14 @@ class A4PumpApp(tk.Tk):
         self._loading_settings = True
         self._pump_settings_dirty = False
         self._operation_running = False
+        self._program_running = False
+        self._start_running = False
+        self._preview_after_id: str | None = None
+        self._state_poll_after_id: str | None = None
+        self._ui_queue_after_id: str | None = None
+        self._ui_queue: queue.Queue[tuple[Callable[..., Any], tuple[Any, ...]]] = queue.Queue()
+        self.detected_ports: list[dict[str, Any]] = []
+        self.current_perfusion_setpoint: PerfusionSetpoint | None = None
 
         self.port_vars = {
             "IN": tk.StringVar(value=self.data["pumps"]["IN"]["port"]),
@@ -97,6 +123,32 @@ class A4PumpApp(tk.Tk):
         self.profile_in_var = tk.StringVar(value="fast30_1ml")
         self.profile_out_var = tk.StringVar(value="drain30_1ml")
         self.out_delay_var = tk.StringVar(value="0.5")
+        ui = load_user_settings().get("ui_preferences", {})
+        if not isinstance(ui, dict):
+            ui = {}
+        self.flow_slider_min = float(ui.get("flow_slider_min", 0.1))
+        self.flow_slider_max = float(ui.get("flow_slider_max", 3.0))
+        self.flow_slider_step = float(ui.get("flow_slider_step", 0.1))
+        self.perfusion_mode_var = tk.StringVar(value="fixed_volume")
+        self.in_flow_var = tk.StringVar(value="2.0")
+        self.flow_slider_var = tk.DoubleVar(value=2.0)
+        self.target_volume_ml_var = tk.StringVar(value="1.0")
+        self.fixed_duration_s_var = tk.StringVar(value="60")
+        self.maximum_duration_s_var = tk.StringVar(value="300")
+        self.in_syringe_var = tk.StringVar(value="terumo_ss05lz_5ml")
+        self.out_syringe_var = tk.StringVar(value="terumo_ss05lz_5ml")
+        self.same_out_syringe_var = tk.BooleanVar(value=True)
+        self.out_ratio_locked_var = tk.BooleanVar(value=True)
+        self.out_ratio_var = tk.StringVar(value="1.0")
+        self.independent_out_flow_var = tk.StringVar(value="2.0")
+        self.in_to_out_delay_var = tk.StringVar(value="0.5")
+        self.requested_start_delay_var = tk.StringVar(value="0")
+        self.perfusion_preview_var = tk.StringVar(value="Enter a valid setpoint.")
+        self.perfusion_state_var = tk.StringVar(value="DIRTY")
+        self.programmed_message_var = tk.StringVar(value="")
+        self.port_scan_status_var = tk.StringVar(value="Ports not scanned")
+        self.in_port_metadata_var = tk.StringVar(value="")
+        self.out_port_metadata_var = tk.StringVar(value="")
         self.page_title_var = tk.StringVar(value="Dashboard")
         self.page_subtitle_var = tk.StringVar(value="Ready")
         self.status_var = tk.StringVar(value="Ready")
@@ -114,6 +166,22 @@ class A4PumpApp(tk.Tk):
             self.timeout_var,
         ):
             variable.trace_add("write", self._mark_pump_settings_dirty)
+        for variable in (
+            self.perfusion_mode_var,
+            self.in_flow_var,
+            self.target_volume_ml_var,
+            self.fixed_duration_s_var,
+            self.maximum_duration_s_var,
+            self.in_syringe_var,
+            self.out_syringe_var,
+            self.same_out_syringe_var,
+            self.out_ratio_locked_var,
+            self.out_ratio_var,
+            self.independent_out_flow_var,
+            self.in_to_out_delay_var,
+            self.requested_start_delay_var,
+        ):
+            variable.trace_add("write", self._on_perfusion_input_changed)
         self._loading_settings = False
         self.bind_all("<Escape>", self.on_escape_stop)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -123,6 +191,10 @@ class A4PumpApp(tk.Tk):
         self.update_syringe_info()
         self.update_profile_info()
         self.refresh_config_display()
+        self.schedule_perfusion_preview()
+        self._ui_queue_after_id = self.after(25, self._drain_ui_queue)
+        self.after(50, self.scan_ports_async)
+        self._state_poll_after_id = self.after(400, self.poll_runtime_state)
 
     def ensure_gui_pump_defaults(self) -> None:
         if "IN" not in self.data["pumps"]:
@@ -289,7 +361,7 @@ class A4PumpApp(tk.Tk):
 
     def set_status(self, message: str) -> None:
         if threading.current_thread() is not threading.main_thread():
-            self.after(0, self.set_status, message)
+            self.post_ui(self.set_status, message)
             return
         self.status_var.set(message)
         if hasattr(self, "dry_run_badge"):
@@ -308,88 +380,212 @@ class A4PumpApp(tk.Tk):
                 f"{'DRY-RUN' if self.dry_run_var.get() else 'LIVE'}"
             )
 
+    def post_ui(self, callback: Callable[..., Any], *args: Any) -> None:
+        self._ui_queue.put((callback, args))
+
+    def _drain_ui_queue(self) -> None:
+        self._ui_queue_after_id = None
+        try:
+            while True:
+                callback, args = self._ui_queue.get_nowait()
+                callback(*args)
+        except queue.Empty:
+            pass
+        if self.winfo_exists():
+            self._ui_queue_after_id = self.after(25, self._drain_ui_queue)
+
+    def destroy(self) -> None:
+        if getattr(self, "_destroyed", False):
+            return
+        self._destroyed = True
+        for attribute in (
+            "_preview_after_id",
+            "_state_poll_after_id",
+            "_ui_queue_after_id",
+            "_manual_stop_after_id",
+            "_jog_stop_after_id",
+        ):
+            after_id = getattr(self, attribute, None)
+            if after_id is not None:
+                try:
+                    self.after_cancel(after_id)
+                except (tk.TclError, ValueError):
+                    pass
+                setattr(self, attribute, None)
+        super().destroy()
+
     def _build_experiment_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
         parent.columnconfigure(1, weight=1)
         parent.rowconfigure(3, weight=1)
 
-        shared = create_card(parent, "GUI / CLI shared config", "NIS must pass this same directory with --config-dir.")
+        shared = create_card(parent, "Armed perfusion", "GUI / CLI / NIS share this state. Device settings are not read back.")
         shared.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-        shared.columnconfigure(0, weight=1)
+        shared.columnconfigure(1, weight=1)
         self.experiment_config_var = tk.StringVar(value="")
-        ttk.Label(shared, textvariable=self.experiment_config_var, style="Value.TLabel").grid(
-            row=2, column=0, sticky="ew", pady=(4, 0)
+        ttk.Label(shared, text="State", style="Card.TLabel").grid(row=2, column=0, sticky="w")
+        self.perfusion_state_label = ttk.Label(shared, textvariable=self.perfusion_state_var, style="Value.TLabel")
+        self.perfusion_state_label.grid(row=2, column=1, sticky="w", padx=(8, 16))
+        ttk.Label(shared, textvariable=self.programmed_message_var, style="Value.TLabel").grid(
+            row=2, column=2, sticky="e"
         )
         self.experiment_pumps_var = tk.StringVar(value="")
         ttk.Label(shared, textvariable=self.experiment_pumps_var, style="Card.TLabel").grid(
-            row=3, column=0, sticky="w", pady=(4, 0)
+            row=3, column=0, columnspan=3, sticky="w", pady=(4, 0)
+        )
+        ttk.Label(shared, textvariable=self.experiment_config_var, style="Subtitle.TLabel").grid(
+            row=4, column=0, columnspan=3, sticky="ew", pady=(2, 0)
         )
 
-        mode_card = create_card(parent, "Run", "LIVE / DRY-RUN is always shown above.")
-        mode_card.grid(row=2, column=0, sticky="nsew", padx=(0, 4), pady=(0, 8))
-        mode_card.columnconfigure(1, weight=1)
-        self.run_mode_combo = ttk.Combobox(mode_card, textvariable=self.run_mode_var, values=RUN_MODES, state="readonly")
-        rows: list[tuple[str, tk.Widget]] = [
-            ("Run mode", self.run_mode_combo),
-            ("Dish ID", ttk.Entry(mode_card, textvariable=self.dish_id_var)),
-            ("Condition", ttk.Entry(mode_card, textvariable=self.condition_var)),
-            ("Trigger", ttk.Combobox(mode_card, textvariable=self.trigger_var, values=TRIGGER_SOURCES, state="readonly")),
-        ]
-        for row, (label, widget) in enumerate(rows, start=2):
-            ttk.Label(mode_card, text=label, style="Card.TLabel").grid(row=row, column=0, sticky="w", pady=2)
-            widget.grid(row=row, column=1, sticky="ew", pady=2)
-
-        profile_card = create_card(parent, "Profiles / timing", "IN and OUT use independent profiles.")
-        profile_card.grid(row=2, column=1, sticky="nsew", padx=(4, 0), pady=(0, 8))
-        profile_card.columnconfigure(1, weight=1)
-        profile_values = list(self.data["profiles"])
-        self.profile_in_combo = ttk.Combobox(
-            profile_card, textvariable=self.profile_in_var, values=profile_values, state="readonly"
-        )
-        self.profile_out_combo = ttk.Combobox(
-            profile_card, textvariable=self.profile_out_var, values=profile_values, state="readonly"
-        )
-        self.out_delay_entry = ttk.Entry(profile_card, textvariable=self.out_delay_var)
-        for row, (label, widget) in enumerate(
-            (
-                ("Profile IN", self.profile_in_combo),
-                ("Profile OUT", self.profile_out_combo),
-                ("OUT delay sec", self.out_delay_entry),
-            ),
-            start=2,
-        ):
-            ttk.Label(profile_card, text=label, style="Card.TLabel").grid(row=row, column=0, sticky="w", pady=3)
-            widget.grid(row=row, column=1, sticky="ew", pady=3)
-
-        actions = create_card(parent, "Primary actions", "Write does not start pumps. Start is guarded against duplicates.")
+        actions = create_card(parent, "Primary actions", "Setpoint edits only update preview; they never send UART commands.")
         actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-        for column in range(3):
+        for column in range(4):
             actions.columnconfigure(column, weight=1)
+        self.scan_ports_button = ttk.Button(
+            actions, text="SCAN PORTS", style="Secondary.TButton", command=self.scan_ports_async
+        )
+        self.scan_ports_button.grid(row=2, column=0, sticky="ew", padx=(0, 4), pady=(4, 0))
         self.experiment_write_button = ttk.Button(
             actions,
-            text="Write IN + OUT profiles",
+            text="PROGRAM / ARM BOTH",
             style="Success.TButton",
             takefocus=False,
-            command=lambda: self.run_thread(self.write_experiment_profiles),
+            command=self.program_arm_gui,
         )
-        self.experiment_write_button.grid(row=2, column=0, sticky="ew", padx=(0, 6), pady=(6, 0))
+        self.experiment_write_button.grid(row=2, column=1, sticky="ew", padx=4, pady=(4, 0))
         self.experiment_start_button = ttk.Button(
             actions,
-            text="START",
+            text="START ARMED",
             style="Primary.TButton",
             takefocus=False,
-            command=lambda: self.run_thread(self.start_run_mode),
+            command=self.start_armed_gui,
         )
-        self.experiment_start_button.grid(row=2, column=1, sticky="ew", padx=6, pady=(6, 0))
+        self.experiment_start_button.grid(row=2, column=2, sticky="ew", padx=4, pady=(4, 0))
         ttk.Button(
             actions,
             text="STOP ALL",
             style="Danger.TButton",
             takefocus=False,
             command=self.gui_stop_all_now,
-        ).grid(row=2, column=2, sticky="ew", padx=(6, 0), pady=(6, 0))
+        ).grid(row=2, column=3, sticky="ew", padx=(4, 0), pady=(4, 0))
 
-        self.run_log = self._make_log_box(parent, row=3, columnspan=2, height=4)
+        setpoint = create_card(parent, "Perfusion setpoint", "Numeric IN flow is authoritative; slider range is a UI preference.")
+        setpoint.grid(row=2, column=0, sticky="nsew", padx=(0, 4), pady=(0, 8))
+        for column in range(4):
+            setpoint.columnconfigure(column, weight=1)
+        self.perfusion_mode_combo = ttk.Combobox(
+            setpoint,
+            textvariable=self.perfusion_mode_var,
+            values=("fixed_volume", "fixed_duration", "bounded_continuous"),
+            state="readonly",
+        )
+        ttk.Label(setpoint, text="Mode", style="Card.TLabel").grid(row=2, column=0, sticky="w")
+        self.perfusion_mode_combo.grid(row=2, column=1, columnspan=3, sticky="ew")
+        ttk.Label(setpoint, text="IN flow mL/min", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=2)
+        self.in_flow_entry = ttk.Entry(setpoint, textvariable=self.in_flow_var, width=8)
+        self.in_flow_entry.grid(row=3, column=1, sticky="ew", pady=2)
+        ttk.Button(setpoint, text="-0.1", style="Compact.TButton", command=lambda: self.adjust_flow(-0.1)).grid(
+            row=3, column=2, sticky="ew", padx=2
+        )
+        ttk.Button(setpoint, text="+0.1", style="Compact.TButton", command=lambda: self.adjust_flow(0.1)).grid(
+            row=3, column=3, sticky="ew", padx=2
+        )
+        self.flow_slider = ttk.Scale(
+            setpoint,
+            from_=self.flow_slider_min,
+            to=self.flow_slider_max,
+            variable=self.flow_slider_var,
+            command=self.on_flow_slider,
+        )
+        self.flow_slider.grid(row=4, column=0, columnspan=4, sticky="ew", pady=2)
+        presets = ttk.Frame(setpoint, style="Card.TFrame")
+        presets.grid(row=5, column=0, columnspan=4, sticky="ew")
+        for column, value in enumerate((0.5, 1.0, 2.0, 3.0)):
+            presets.columnconfigure(column, weight=1)
+            ttk.Button(
+                presets,
+                text=f"{value:.1f}",
+                style="Compact.TButton",
+                command=lambda selected=value: self.set_flow(selected),
+            ).grid(row=0, column=column, sticky="ew", padx=1)
+        bound_rows = (
+            ("Target volume mL", self.target_volume_ml_var),
+            ("Duration sec", self.fixed_duration_s_var),
+            ("Maximum sec", self.maximum_duration_s_var),
+            ("IN→OUT delay sec", self.in_to_out_delay_var),
+        )
+        self.bound_entries: list[tk.Widget] = []
+        for row, (label, variable) in enumerate(bound_rows, start=6):
+            ttk.Label(setpoint, text=label, style="Card.TLabel").grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
+            entry = ttk.Entry(setpoint, textvariable=variable)
+            entry.grid(row=row, column=2, columnspan=2, sticky="ew", pady=1)
+            self.bound_entries.append(entry)
+
+        pair = create_card(parent, "IN / OUT calculation", "IN is forward; OUT is reverse. Unequal flow can change dish volume.")
+        pair.grid(row=2, column=1, sticky="nsew", padx=(4, 0), pady=(0, 8))
+        pair.columnconfigure(1, weight=1)
+        syringe_values = tuple(self.data["syringes"])
+        self.in_syringe_combo = ttk.Combobox(pair, textvariable=self.in_syringe_var, values=syringe_values, state="readonly")
+        self.out_syringe_combo = ttk.Combobox(pair, textvariable=self.out_syringe_var, values=syringe_values, state="readonly")
+        rows = (
+            ("IN syringe", self.in_syringe_combo),
+            ("OUT syringe", self.out_syringe_combo),
+        )
+        for row, (label, widget) in enumerate(rows, start=2):
+            ttk.Label(pair, text=label, style="Card.TLabel").grid(row=row, column=0, sticky="w", pady=2)
+            widget.grid(row=row, column=1, sticky="ew", pady=2)
+        self.same_syringe_check = ttk.Checkbutton(
+            pair, text="Use same syringe for OUT", variable=self.same_out_syringe_var, command=self.on_same_syringe
+        )
+        self.same_syringe_check.grid(row=4, column=0, columnspan=2, sticky="w")
+        self.ratio_lock_check = ttk.Checkbutton(
+            pair, text="Lock OUT/IN ratio", variable=self.out_ratio_locked_var, command=self.update_ratio_widgets
+        )
+        self.ratio_lock_check.grid(row=5, column=0, columnspan=2, sticky="w")
+        ttk.Label(pair, text="OUT/IN ratio", style="Card.TLabel").grid(row=6, column=0, sticky="w")
+        self.out_ratio_entry = ttk.Entry(pair, textvariable=self.out_ratio_var)
+        self.out_ratio_entry.grid(row=6, column=1, sticky="ew")
+        ttk.Label(pair, text="Independent OUT mL/min", style="Card.TLabel").grid(row=7, column=0, sticky="w")
+        self.independent_out_flow_entry = ttk.Entry(pair, textvariable=self.independent_out_flow_var)
+        self.independent_out_flow_entry.grid(row=7, column=1, sticky="ew")
+        ttk.Label(pair, text="Dish ID / Condition", style="Card.TLabel").grid(row=8, column=0, sticky="w")
+        metadata = ttk.Frame(pair, style="Card.TFrame")
+        metadata.grid(row=8, column=1, sticky="ew")
+        metadata.columnconfigure(0, weight=1)
+        metadata.columnconfigure(1, weight=1)
+        ttk.Entry(metadata, textvariable=self.dish_id_var).grid(row=0, column=0, sticky="ew", padx=(0, 2))
+        ttk.Entry(metadata, textvariable=self.condition_var).grid(row=0, column=1, sticky="ew", padx=(2, 0))
+        ttk.Label(pair, text="Requested start delay sec", style="Card.TLabel").grid(row=9, column=0, sticky="w")
+        self.requested_start_delay_entry = ttk.Entry(pair, textvariable=self.requested_start_delay_var)
+        self.requested_start_delay_entry.grid(row=9, column=1, sticky="ew")
+        ttk.Label(pair, textvariable=self.port_scan_status_var, style="Subtitle.TLabel").grid(
+            row=10, column=0, columnspan=2, sticky="w", pady=(2, 0)
+        )
+
+        preview = create_card(parent, "Quantized preview", "PROGRAMMED — NOT READ BACK after successful LIVE programming.")
+        preview.grid(row=3, column=0, columnspan=2, sticky="nsew")
+        preview.columnconfigure(0, weight=1)
+        ttk.Label(
+            preview,
+            textvariable=self.perfusion_preview_var,
+            style="Card.TLabel",
+            justify="left",
+            font=("Consolas", 9),
+        ).grid(row=2, column=0, sticky="nw")
+        self.run_log = tk.Text(preview, height=2, wrap="word", font=("Consolas", 8))
+        self.run_log.grid(row=3, column=0, sticky="ew", pady=(4, 0))
+        self.setpoint_widgets = [
+            self.perfusion_mode_combo, self.in_flow_entry, self.flow_slider, *self.bound_entries,
+            self.in_syringe_combo, self.out_syringe_combo, self.same_syringe_check,
+            self.ratio_lock_check, self.out_ratio_entry, self.independent_out_flow_entry,
+            self.requested_start_delay_entry,
+        ]
+        # Compatibility handles for the legacy profile workflow now located in Advanced.
+        self.run_mode_combo = ttk.Combobox(parent, textvariable=self.run_mode_var, values=RUN_MODES, state="readonly")
+        self.profile_in_combo = ttk.Combobox(parent, textvariable=self.profile_in_var, values=tuple(self.data["profiles"]), state="readonly")
+        self.profile_out_combo = ttk.Combobox(parent, textvariable=self.profile_out_var, values=tuple(self.data["profiles"]), state="readonly")
+        self.out_delay_entry = ttk.Entry(parent, textvariable=self.out_delay_var)
+        self.update_ratio_widgets()
 
     def _build_setup_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
@@ -468,7 +664,7 @@ class A4PumpApp(tk.Tk):
         buttons = ttk.Frame(card, style="Card.TFrame")
         buttons.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         actions = (
-            ("Refresh ports", self.refresh_ports),
+            ("Scan ports", self.scan_ports_async),
             ("Save pump settings", self.save_pump_settings_gui),
             ("Reload from JSON", self.reload_from_json),
             ("Open config folder", self.open_config_folder),
@@ -582,7 +778,7 @@ class A4PumpApp(tk.Tk):
             text="Test all",
             style="Secondary.TButton",
             takefocus=False,
-            command=lambda: self.run_thread(self.connection_test),
+            command=lambda: self.connection_test_async(),
         ).grid(
             row=2, column=1, sticky="ew", padx=6, pady=(8, 0)
         )
@@ -624,36 +820,45 @@ class A4PumpApp(tk.Tk):
         else:
             self.out_port_combo = combo
             self.out_detail_widgets.extend([port_label, combo])
+        metadata_label = ttk.Label(
+            card,
+            textvariable=self.in_port_metadata_var if pump_key == "IN" else self.out_port_metadata_var,
+            style="Subtitle.TLabel",
+            wraplength=340,
+        )
+        metadata_label.grid(row=5, column=0, columnspan=3, sticky="w", padx=4, pady=(0, 4))
+        if pump_key == "OUT":
+            self.out_detail_widgets.append(metadata_label)
         baud_label = ttk.Label(card, text="Baudrate", style="Card.TLabel")
-        baud_label.grid(row=5, column=0, sticky="w", padx=4, pady=4)
+        baud_label.grid(row=6, column=0, sticky="w", padx=4, pady=4)
         baud_value = ttk.Label(card, text="9600", style="Value.TLabel")
-        baud_value.grid(row=5, column=1, sticky="w", padx=4, pady=4)
+        baud_value.grid(row=6, column=1, sticky="w", padx=4, pady=4)
         test_button = ttk.Button(
             card,
             text=f"Test {pump_key}",
             style="Secondary.TButton",
             takefocus=False,
-            command=lambda key=pump_key: self.run_thread(self.connection_test, key),
+            command=lambda key=pump_key: self.connection_test_async(key),
         )
         test_button.grid(
-            row=6, column=0, columnspan=3, sticky="ew", padx=4, pady=(8, 4)
+            row=7, column=0, columnspan=3, sticky="ew", padx=4, pady=(8, 4)
         )
         if pump_key == "OUT":
             self.out_detail_widgets.extend([baud_label, baud_value, test_button])
         if pump_key == "IN":
-            ttk.Button(card, text="Start forward", style="Primary.TButton", takefocus=False, command=lambda: self.run_thread(self.gui_send, "IN", "start-forward")).grid(
-                row=7, column=0, sticky="ew", padx=4, pady=4
+            ttk.Button(card, text="Start forward", style="Primary.TButton", takefocus=False, command=lambda: self.gui_send_async("IN", "start-forward")).grid(
+                row=8, column=0, sticky="ew", padx=4, pady=4
             )
-            ttk.Button(card, text="Stop", style="DangerSecondary.TButton", takefocus=False, command=lambda: self.run_thread(self.gui_send, "IN", "stop")).grid(
-                row=7, column=1, columnspan=2, sticky="ew", padx=4, pady=4
+            ttk.Button(card, text="Stop", style="DangerSecondary.TButton", takefocus=False, command=lambda: self.gui_send_async("IN", "stop")).grid(
+                row=8, column=1, columnspan=2, sticky="ew", padx=4, pady=4
             )
         else:
-            self.out_start_forward_button = ttk.Button(card, text="Start forward", style="Primary.TButton", takefocus=False, command=lambda: self.run_thread(self.gui_send, "OUT", "start-forward"))
-            self.out_start_forward_button.grid(row=7, column=0, sticky="ew", padx=4, pady=4)
-            self.out_start_reverse_button = ttk.Button(card, text="Start reverse", style="Primary.TButton", takefocus=False, command=lambda: self.run_thread(self.gui_send, "OUT", "start-reverse"))
-            self.out_start_reverse_button.grid(row=7, column=1, sticky="ew", padx=4, pady=4)
-            self.out_stop_button = ttk.Button(card, text="Stop", style="DangerSecondary.TButton", takefocus=False, command=lambda: self.run_thread(self.gui_send, "OUT", "stop"))
-            self.out_stop_button.grid(row=7, column=2, sticky="ew", padx=4, pady=4)
+            self.out_start_forward_button = ttk.Button(card, text="Start forward", style="Primary.TButton", takefocus=False, command=lambda: self.gui_send_async("OUT", "start-forward"))
+            self.out_start_forward_button.grid(row=8, column=0, sticky="ew", padx=4, pady=4)
+            self.out_start_reverse_button = ttk.Button(card, text="Start reverse", style="Primary.TButton", takefocus=False, command=lambda: self.gui_send_async("OUT", "start-reverse"))
+            self.out_start_reverse_button.grid(row=8, column=1, sticky="ew", padx=4, pady=4)
+            self.out_stop_button = ttk.Button(card, text="Stop", style="DangerSecondary.TButton", takefocus=False, command=lambda: self.gui_send_async("OUT", "stop"))
+            self.out_stop_button.grid(row=8, column=2, sticky="ew", padx=4, pady=4)
             self.out_detail_widgets.extend(
                 [self.out_start_forward_button, self.out_start_reverse_button, self.out_stop_button]
             )
@@ -822,7 +1027,7 @@ class A4PumpApp(tk.Tk):
         actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 12))
         actions.columnconfigure(0, weight=1)
         actions.columnconfigure(1, weight=1)
-        ttk.Button(actions, text="Start", style="Primary.TButton", takefocus=False, command=lambda: self.run_thread(self.start_run_mode)).grid(
+        ttk.Button(actions, text="Start", style="Primary.TButton", takefocus=False, command=self.start_run_mode_async).grid(
             row=2, column=0, sticky="ew", padx=(0, 6), pady=(8, 0)
         )
         ttk.Button(actions, text="STOP ALL", style="Danger.TButton", takefocus=False, command=self.gui_stop_all_now).grid(
@@ -849,24 +1054,307 @@ class A4PumpApp(tk.Tk):
         return box
 
     def refresh_ports(self) -> None:
-        try:
-            detected = [port["device"] for port in list_serial_ports()]
-        except Exception as exc:
-            messagebox.showerror("List ports failed", str(exc))
+        """Backward-compatible refresh entry point; scanning remains asynchronous."""
+        self.scan_ports_async()
+
+    def scan_ports_async(self) -> None:
+        if getattr(self, "_port_scan_running", False):
             return
+        self._port_scan_running = True
+        self.port_scan_status_var.set("Scanning serial ports…")
+        if hasattr(self, "scan_ports_button"):
+            self.scan_ports_button.configure(state="disabled")
+
+        def worker() -> None:
+            try:
+                ports = scan_serial_ports(provider=list_serial_ports)
+                self.post_ui(self._apply_port_scan, ports, None)
+            except Exception as exc:
+                self.post_ui(self._apply_port_scan, [], str(exc))
+
+        threading.Thread(target=worker, daemon=True, name="a4-port-scan").start()
+
+    def _apply_port_scan(self, ports: list[dict[str, Any]], error: str | None) -> None:
+        self._port_scan_running = False
+        if hasattr(self, "scan_ports_button"):
+            self.scan_ports_button.configure(state="normal")
+        if error:
+            self.port_scan_status_var.set(f"Scan failed: {error}")
+            self.set_status(f"Port scan failed: {error}")
+            return
+        self.detected_ports = ports
         saved = [
             str(self.data["pumps"].get("IN", {}).get("port", "")),
             str(self.data["pumps"].get("OUT", {}).get("port", "")),
         ]
         entered = [self.port_vars["IN"].get(), self.port_vars["OUT"].get()]
-        values = merge_port_candidates(detected, saved, entered)
+        values = merge_port_devices(ports, saved, entered)
         self.in_port_combo.configure(values=values)
         self.out_port_combo.configure(values=values)
-        self.append_log(self.pump_log, f"Ports: {', '.join(values)}")
+        timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        self.port_scan_status_var.set(f"Last scan: {timestamp} · {len(ports)} device(s)")
+        self.update_selected_port_metadata()
+        if hasattr(self, "pump_log"):
+            self.append_log(self.pump_log, f"Ports: {', '.join(values) or '(none)'}")
+
+    def update_selected_port_metadata(self) -> None:
+        by_device = {str(port.get("device", "")).casefold(): port for port in self.detected_ports}
+        for key, variable in (("IN", self.in_port_metadata_var), ("OUT", self.out_port_metadata_var)):
+            device = self.port_vars[key].get().strip()
+            port = by_device.get(device.casefold())
+            if not device:
+                text = "No port selected"
+            elif port is None:
+                text = f"{device}: NOT DETECTED"
+            else:
+                metadata = [
+                    str(port.get("description", "")).strip(),
+                    str(port.get("manufacturer", "")).strip(),
+                    str(port.get("product", "")).strip(),
+                    f"HWID {port.get('hwid')}" if port.get("hwid") else "",
+                ]
+                text = f"{device}: DETECTED · " + " · ".join(item for item in metadata if item)
+            variable.set(text)
+
+    def _on_perfusion_input_changed(self, *_args: Any) -> None:
+        if self._loading_settings:
+            return
+        if self.same_out_syringe_var.get() and self.out_syringe_var.get() != self.in_syringe_var.get():
+            self._loading_settings = True
+            self.out_syringe_var.set(self.in_syringe_var.get())
+            self._loading_settings = False
+        self.schedule_perfusion_preview()
+        self.after_idle(self._invalidate_shared_plan, "perfusion setpoint changed")
+
+    def _invalidate_shared_plan(self, reason: str) -> None:
+        try:
+            invalidate_armed(self.config_resolution.active_config_dir, reason)
+        except Exception as exc:
+            self.set_status(f"Could not invalidate armed plan: {exc}")
+
+    def schedule_perfusion_preview(self) -> None:
+        if self._preview_after_id is not None:
+            try:
+                self.after_cancel(self._preview_after_id)
+            except Exception:
+                pass
+        self._preview_after_id = self.after(120, self.update_perfusion_preview)
+
+    def build_current_perfusion_setpoint(self) -> PerfusionSetpoint:
+        return build_perfusion_setpoint(
+            self.data,
+            mode=self.perfusion_mode_var.get(),
+            in_flow_ml_min=float(self.in_flow_var.get()),
+            target_volume_ml=float(self.target_volume_ml_var.get()) if self.target_volume_ml_var.get().strip() else None,
+            duration_s=float(self.fixed_duration_s_var.get()) if self.fixed_duration_s_var.get().strip() else None,
+            maximum_duration_s=float(self.maximum_duration_s_var.get()) if self.maximum_duration_s_var.get().strip() else None,
+            in_syringe_key=self.in_syringe_var.get(),
+            out_syringe_key=self.in_syringe_var.get() if self.same_out_syringe_var.get() else self.out_syringe_var.get(),
+            out_ratio_locked=self.out_ratio_locked_var.get(),
+            out_in_ratio=float(self.out_ratio_var.get()),
+            independent_out_flow_ml_min=(
+                float(self.independent_out_flow_var.get())
+                if self.independent_out_flow_var.get().strip()
+                else None
+            ),
+            in_to_out_delay_s=float(self.in_to_out_delay_var.get()),
+            requested_start_delay_s=float(self.requested_start_delay_var.get() or 0),
+        )
+
+    def update_perfusion_preview(self) -> None:
+        self._preview_after_id = None
+        try:
+            result = self.build_current_perfusion_setpoint()
+            self.current_perfusion_setpoint = result
+            in_set, out_set = result.in_setpoint, result.out_setpoint
+            outside = ""
+            flow = float(self.in_flow_var.get())
+            if not self.flow_slider_min <= flow <= self.flow_slider_max:
+                outside = f" · OUTSIDE SLIDER RANGE {self.flow_slider_min:g}-{self.flow_slider_max:g}"
+            else:
+                self.flow_slider_var.set(flow)
+            self.perfusion_preview_var.set(
+                f"IN  req {in_set.requested_flow_ml_min:.4f} mL/min → "
+                f"{in_set.programmed_speed_mm_min:.2f} mm/min → actual {in_set.estimated_actual_flow_ml_min:.4f}; "
+                f"{in_set.expected_volume_ml:.4f} mL\n"
+                f"OUT req {out_set.requested_flow_ml_min:.4f} mL/min → "
+                f"{out_set.programmed_speed_mm_min:.2f} mm/min → actual {out_set.estimated_actual_flow_ml_min:.4f}; "
+                f"{out_set.expected_volume_ml:.4f} mL\n"
+                f"Duration {result.programmed_duration_s}s · ratio {result.out_in_ratio:.3f} · "
+                f"start delay {result.requested_start_delay_s:.1f}s · IN→OUT {result.in_to_out_delay_s:.3f}s{outside}\n"
+                f"IN UART: {' '.join(in_set.uart_commands)}\nOUT UART: {' '.join(out_set.uart_commands)}"
+            )
+        except Exception as exc:
+            self.current_perfusion_setpoint = None
+            self.perfusion_preview_var.set(f"INVALID SETPOINT: {exc}")
+        self.update_runtime_controls(self.perfusion_state_var.get())
+
+    def on_flow_slider(self, value: str) -> None:
+        # Slider is preview-only. It only updates the authoritative numeric entry.
+        raw = float(value)
+        stepped = round(raw / self.flow_slider_step) * self.flow_slider_step
+        self.in_flow_var.set(f"{stepped:.6g}")
+
+    def set_flow(self, value: float) -> None:
+        self.in_flow_var.set(f"{value:.6g}")
+
+    def adjust_flow(self, delta: float) -> None:
+        try:
+            self.set_flow(float(self.in_flow_var.get()) + delta)
+        except ValueError:
+            self.set_status("IN flow is not a valid number")
+
+    def on_same_syringe(self) -> None:
+        if self.same_out_syringe_var.get():
+            self.out_syringe_var.set(self.in_syringe_var.get())
+        self.out_syringe_combo.configure(state="disabled" if self.same_out_syringe_var.get() else "readonly")
+        self.schedule_perfusion_preview()
+
+    def update_ratio_widgets(self) -> None:
+        if hasattr(self, "out_ratio_entry"):
+            self.out_ratio_entry.configure(state="normal" if self.out_ratio_locked_var.get() else "disabled")
+        if hasattr(self, "independent_out_flow_entry"):
+            self.independent_out_flow_entry.configure(state="disabled" if self.out_ratio_locked_var.get() else "normal")
+        if hasattr(self, "out_syringe_combo"):
+            self.out_syringe_combo.configure(state="disabled" if self.same_out_syringe_var.get() else "readonly")
+
+    def program_arm_gui(self) -> None:
+        if self._program_running or self._start_running:
+            self.set_status("Another perfusion operation is running")
+            return
+        try:
+            self.apply_gui_pump_settings()
+            if not self.out_enabled_var.get():
+                raise ValueError("OUT must be enabled to arm paired perfusion")
+            path = save_pump_settings(
+                self.config_resolution,
+                in_port=self.port_vars["IN"].get(),
+                out_enabled=True,
+                out_port=self.port_vars["OUT"].get(),
+                baudrate=self.baudrate_var.get(),
+                terminator=self.terminator_var.get(),
+                timeout=self.timeout_var.get(),
+            )
+            self.data = load_config(self.config_resolution)
+            setpoint = self.build_current_perfusion_setpoint()
+            context = {
+                "dry_run": self.dry_run_var.get(),
+                "dish_id": self.dish_id_var.get(),
+                "condition": self.condition_var.get(),
+                "trigger_source": self.trigger_var.get(),
+            }
+        except Exception as exc:
+            messagebox.showerror("Cannot program/arm", str(exc))
+            return
+        self._program_running = True
+        self.set_operational_state("PROGRAMMING")
+        self.set_status(f"Programming both pumps using {path}")
+
+        def worker() -> None:
+            try:
+                state = program_pair(
+                    self.config_resolution,
+                    setpoint,
+                    scanner=lambda: scan_serial_ports(provider=list_serial_ports),
+                    **context,
+                )
+                self.post_ui(self._operation_succeeded, state)
+            except Exception as exc:
+                self.post_ui(self._operation_failed, "Programming failed", str(exc))
+
+        threading.Thread(target=worker, daemon=True, name="a4-program-pair").start()
+
+    def start_armed_gui(self) -> None:
+        if self._program_running or self._start_running:
+            self.set_status("Another perfusion operation is running")
+            return
+        if self.dry_run_var.get():
+            messagebox.showerror("START refused", "Switch to LIVE and create an ARMED plan first.")
+            return
+        if get_arm_status(self.config_resolution).get("state") != "ARMED":
+            messagebox.showerror("START refused", "The shared perfusion state is not ARMED.")
+            return
+        context = {
+            "dish_id": self.dish_id_var.get(),
+            "condition": self.condition_var.get(),
+            "trigger_source": self.trigger_var.get(),
+        }
+        self._start_running = True
+        self.set_operational_state("STARTING")
+
+        def worker() -> None:
+            try:
+                state = start_armed_pair(
+                    self.config_resolution,
+                    scanner=lambda: scan_serial_ports(provider=list_serial_ports),
+                    **context,
+                )
+                self.post_ui(self._operation_succeeded, state)
+            except Exception as exc:
+                self.post_ui(self._operation_failed, "Start failed", str(exc))
+
+        threading.Thread(target=worker, daemon=True, name="a4-start-armed").start()
+
+    def _operation_succeeded(self, state: dict[str, Any]) -> None:
+        self._program_running = False
+        self._start_running = False
+        name = str(state.get("state", "DIRTY"))
+        self.set_operational_state(name)
+        self.append_log(self.run_log, json.dumps({"state": name, "plan_id": state.get("plan_id"), "run_id": state.get("run_id")}, ensure_ascii=False))
+        self.set_status(str(state.get("message") or f"Perfusion state: {name}"))
+
+    def _operation_failed(self, title: str, message: str) -> None:
+        self._program_running = False
+        self._start_running = False
+        self.set_operational_state("FAULT")
+        messagebox.showerror(title, message)
+
+    def poll_runtime_state(self) -> None:
+        try:
+            status = get_arm_status(self.config_resolution)
+            state = str(status.get("state", "DIRTY"))
+            if state == "MISSING":
+                state = "DIRTY"
+            if not self._program_running and not self._start_running:
+                self.set_operational_state(state)
+        except Exception as exc:
+            self.set_status(f"Runtime state poll failed: {exc}")
+        finally:
+            if self.winfo_exists():
+                self._state_poll_after_id = self.after(400, self.poll_runtime_state)
+
+    def set_operational_state(self, state: str) -> None:
+        self.perfusion_state_var.set(state)
+        if state == "ARMED":
+            self.programmed_message_var.set("PROGRAMMED — NOT READ BACK")
+        elif state == "DRY_RUN_PREVIEW":
+            self.programmed_message_var.set("DRY-RUN PREVIEW — NOT PROGRAMMED")
+        else:
+            self.programmed_message_var.set("")
+        self.update_runtime_controls(state)
+
+    def update_runtime_controls(self, state: str) -> None:
+        locked = state in {"PROGRAMMING", "PENDING", "STARTING", "STARTED", "RUNNING"}
+        for widget in getattr(self, "setpoint_widgets", []):
+            try:
+                if isinstance(widget, ttk.Combobox):
+                    widget.configure(state="disabled" if locked else "readonly")
+                else:
+                    widget.configure(state="disabled" if locked else "normal")
+            except tk.TclError:
+                pass
+        if not locked:
+            self.update_ratio_widgets()
+        if hasattr(self, "experiment_write_button"):
+            self.experiment_write_button.configure(state="disabled" if locked or self.current_perfusion_setpoint is None else "normal")
+        if hasattr(self, "experiment_start_button"):
+            self.experiment_start_button.configure(state="normal" if state == "ARMED" and not self.dry_run_var.get() else "disabled")
 
     def _mark_pump_settings_dirty(self, *_args: Any) -> None:
         if not self._loading_settings:
             self._pump_settings_dirty = True
+            self.update_selected_port_metadata()
+            self.after_idle(self._invalidate_shared_plan, "pump or port settings changed")
 
     def refresh_config_display(self) -> None:
         resolution = self.config_resolution
@@ -932,6 +1420,7 @@ class A4PumpApp(tk.Tk):
             ):
                 return False
         try:
+            old_state = read_state(self.config_resolution.active_config_dir)
             resolution = validate_config_directory(self.config_resolution.active_config_dir)
             if not resolution.required_files_present:
                 raise FileNotFoundError(f"Missing files: {', '.join(resolution.missing_files)}")
@@ -951,8 +1440,24 @@ class A4PumpApp(tk.Tk):
             self._loading_settings = False
             self._pump_settings_dirty = False
             self._refresh_config_dependent_widgets()
+            values = merge_port_devices(
+                self.detected_ports,
+                [
+                    str(self.data["pumps"]["IN"].get("port", "")),
+                    str(self.data["pumps"]["OUT"].get("port", "")),
+                ],
+                [self.port_vars["IN"].get(), self.port_vars["OUT"].get()],
+            )
+            self.in_port_combo.configure(values=values)
+            self.out_port_combo.configure(values=values)
             self.refresh_ports()
             self.refresh_config_display()
+            if (
+                old_state
+                and old_state.get("state") in {"ARMED", "PENDING", "STARTING", "DRY_RUN_PREVIEW"}
+                and (old_state.get("plan") or {}).get("config_fingerprint") != config_fingerprint(resolution.active_config_dir)
+            ):
+                invalidate_armed(resolution.active_config_dir, "relevant config reload")
             self.set_status(f"Reloaded: {resolution.active_pumps_json}")
             return True
         except Exception as exc:
@@ -969,6 +1474,10 @@ class A4PumpApp(tk.Tk):
                 widget.configure(values=profile_values)
         if hasattr(self, "syringe_combo"):
             self.syringe_combo.configure(values=syringe_values)
+        for widget_name in ("in_syringe_combo", "out_syringe_combo"):
+            widget = getattr(self, widget_name, None)
+            if widget is not None:
+                widget.configure(values=syringe_values)
         for variable, values in (
             (self.profile_in_var, profile_values),
             (self.profile_out_var, profile_values),
@@ -1001,6 +1510,7 @@ class A4PumpApp(tk.Tk):
             )
             return
         try:
+            invalidate_armed(self.config_resolution.active_config_dir, "Active Config Directory changed")
             persist_active_config_dir(resolution.active_config_dir)
             shared = resolve_config()
             if shared.active_config_dir != resolution.active_config_dir:
@@ -1081,29 +1591,64 @@ class A4PumpApp(tk.Tk):
         self.set_status("Profile settings written")
 
     def connection_test(self, pump_key: str | None = None) -> None:
-        if self.dry_run_var.get():
-            self.append_log(self.pump_log, "Connection test: dry-run enabled")
-            return
         try:
-            import serial
-
             self.apply_gui_pump_settings()
-            pump_keys = [pump_key] if pump_key is not None else self.available_pumps()
-            for key in pump_keys:
-                if key not in self.available_pumps():
-                    raise ValueError(f"{key} pump is disabled")
-                cfg = self.data["pumps"][key]
-                if not str(cfg.get("port", "")).strip():
-                    raise ValueError(f"{key} port is blank")
-                with serial.Serial(
-                    cfg["port"],
-                    cfg.get("baudrate", 9600),
-                    timeout=cfg.get("timeout", 1.0),
-                ):
-                    pass
-                self.append_log(self.pump_log, f"{key}: opened and closed {cfg['port']}")
+            messages = self._perform_connection_test(
+                json.loads(json.dumps(self.data)),
+                pump_key,
+                self.dry_run_var.get(),
+            )
+            for message in messages:
+                self.append_log(self.pump_log, message)
         except Exception as exc:
-            self.after(0, lambda message=str(exc): messagebox.showerror("Connection test failed", message))
+            messagebox.showerror("Connection test failed", str(exc))
+
+    def connection_test_async(self, pump_key: str | None = None) -> None:
+        try:
+            self.apply_gui_pump_settings()
+            snapshot = json.loads(json.dumps(self.data))
+            dry_run = self.dry_run_var.get()
+        except Exception as exc:
+            messagebox.showerror("Connection test failed", str(exc))
+            return
+
+        def worker() -> None:
+            try:
+                messages = self._perform_connection_test(snapshot, pump_key, dry_run)
+                for message in messages:
+                    self.append_log(self.pump_log, message)
+            except Exception as exc:
+                self.post_ui(messagebox.showerror, "Connection test failed", str(exc))
+
+        threading.Thread(target=worker, daemon=True, name="a4-connection-test").start()
+
+    @staticmethod
+    def _perform_connection_test(
+        data: dict[str, Any],
+        pump_key: str | None,
+        dry_run: bool,
+    ) -> list[str]:
+        if dry_run:
+            return ["Connection test: dry-run enabled"]
+        import serial
+
+        enabled = [key for key, cfg in data["pumps"].items() if cfg.get("enabled", True)]
+        pump_keys = [pump_key] if pump_key is not None else enabled
+        messages: list[str] = []
+        for key in pump_keys:
+            if key not in enabled:
+                raise ValueError(f"{key} pump is disabled")
+            cfg = data["pumps"][key]
+            if not str(cfg.get("port", "")).strip():
+                raise ValueError(f"{key} port is blank")
+            with serial.Serial(
+                cfg["port"],
+                cfg.get("baudrate", 9600),
+                timeout=cfg.get("timeout", 1.0),
+            ):
+                pass
+            messages.append(f"{key}: opened and closed {cfg['port']}")
+        return messages
 
     def is_pump_enabled(self, pump_key: str) -> bool:
         if pump_key == "IN":
@@ -1131,6 +1676,8 @@ class A4PumpApp(tk.Tk):
             )
             if not confirmed:
                 self.dry_run_var.set(True)
+        self._invalidate_shared_plan("LIVE / DRY-RUN mode changed")
+        self.update_runtime_controls(self.perfusion_state_var.get())
         self.set_status("LIVE mode enabled" if not self.dry_run_var.get() else "DRY-RUN mode enabled")
 
     def update_out_widgets_state(self) -> None:
@@ -1317,6 +1864,22 @@ class A4PumpApp(tk.Tk):
         self._closing = True
         self.cancel_hold_auto_stop()
         self.cancel_jog_timer()
+        if self._state_poll_after_id is not None:
+            try:
+                self.after_cancel(self._state_poll_after_id)
+            except Exception:
+                pass
+            self._state_poll_after_id = None
+        try:
+            persist_ui_preferences(
+                {
+                    "flow_slider_min": self.flow_slider_min,
+                    "flow_slider_max": self.flow_slider_max,
+                    "flow_slider_step": self.flow_slider_step,
+                }
+            )
+        except Exception as exc:
+            print(f"Could not save UI preferences: {exc}")
         try:
             self.apply_gui_pump_settings()
         except Exception as exc:
@@ -1326,17 +1889,16 @@ class A4PumpApp(tk.Tk):
             "dish_id": self.dish_id_var.get(),
             "condition": self.condition_var.get(),
             "trigger_source": "Manual",
-            "note": "WM_DELETE_WINDOW",
         }
         self.withdraw()
 
         def close_worker() -> None:
             try:
-                stop_all(self.data, **context)
+                stop_all_safe(self.config_resolution, **context)
             except Exception as exc:
                 print(f"Close stop_all failed: {exc}")
             finally:
-                self.after(0, self.destroy)
+                self.post_ui(self.destroy)
 
         threading.Thread(target=close_worker, daemon=True).start()
 
@@ -1505,6 +2067,33 @@ class A4PumpApp(tk.Tk):
         self.append_log(self.pump_log, json.dumps(result, ensure_ascii=False))
         self.set_status(f"{pump_key} {action}: {result.get('response', '')}")
 
+    def gui_send_async(self, pump_key: str, action: str) -> None:
+        try:
+            self.apply_gui_pump_settings()
+            data = json.loads(json.dumps(self.data))
+            context = {
+                "dry_run": self.dry_run_var.get(),
+                "dish_id": self.dish_id_var.get(),
+                "condition": self.condition_var.get(),
+                "trigger_source": "Manual",
+            }
+        except Exception as exc:
+            messagebox.showerror("Operation failed", str(exc))
+            return
+
+        def worker() -> None:
+            try:
+                result = send_action(data, pump_key, action, **context)
+                self.post_ui(self._gui_send_succeeded, pump_key, action, result)
+            except Exception as exc:
+                self.post_ui(messagebox.showerror, "Operation failed", str(exc))
+
+        threading.Thread(target=worker, daemon=True, name=f"a4-{pump_key.casefold()}-{action}").start()
+
+    def _gui_send_succeeded(self, pump_key: str, action: str, result: dict[str, Any]) -> None:
+        self.append_log(self.pump_log, json.dumps(result, ensure_ascii=False))
+        self.set_status(f"{pump_key} {action}: {result.get('response', '')}")
+
     def gui_stop_all_now(self) -> None:
         self.cancel_hold_auto_stop()
         self.cancel_jog_timer()
@@ -1532,15 +2121,41 @@ class A4PumpApp(tk.Tk):
             "trigger_source": self.trigger_var.get(),
         }
         try:
-            results = stop_all(self.data, **common)
+            results = stop_all_safe(self.config_resolution, **common)
             self.append_log(self.pump_log, json.dumps(results, ensure_ascii=False))
             self.append_log(self.run_log, json.dumps(results, ensure_ascii=False))
             self.set_status("STOP ALL sent")
         except Exception as exc:
             self.set_status(f"STOP ALL failed: {exc}")
-            self.after(0, lambda message=str(exc): messagebox.showerror("STOP ALL failed", message))
+            self.post_ui(messagebox.showerror, "STOP ALL failed", str(exc))
 
     def start_run_mode(self) -> None:
+        captured = self._capture_run_mode()
+        result = self._execute_run_mode(*captured)
+        self.append_log(self.run_log, json.dumps(result, ensure_ascii=False))
+        self.set_status(f"Run mode completed: {captured[1]}")
+
+    def start_run_mode_async(self) -> None:
+        if self._operation_running:
+            self.set_status("An experiment operation is already running")
+            return
+        try:
+            captured = self._capture_run_mode()
+        except Exception as exc:
+            messagebox.showerror("Operation failed", str(exc))
+            return
+        self._operation_running = True
+
+        def worker() -> None:
+            try:
+                result = self._execute_run_mode(*captured)
+                self.post_ui(self._run_mode_succeeded, captured[1], result)
+            except Exception as exc:
+                self.post_ui(self._run_mode_failed, str(exc))
+
+        threading.Thread(target=worker, daemon=True, name="a4-legacy-run-mode").start()
+
+    def _capture_run_mode(self) -> tuple[dict[str, Any], str, str, str, float, dict[str, Any]]:
         self.apply_gui_pump_settings()
         mode = self.run_mode_var.get()
         self.require_out_enabled_for_mode(mode)
@@ -1550,36 +2165,62 @@ class A4PumpApp(tk.Tk):
             "condition": self.condition_var.get(),
             "trigger_source": self.trigger_var.get(),
         }
+        return (
+            json.loads(json.dumps(self.data)),
+            mode,
+            self.profile_in_var.get(),
+            self.profile_out_var.get(),
+            float(self.out_delay_var.get()),
+            common,
+        )
+
+    @staticmethod
+    def _execute_run_mode(
+        data: dict[str, Any],
+        mode: str,
+        profile_in: str,
+        profile_out: str,
+        out_delay: float,
+        common: dict[str, Any],
+    ) -> Any:
         if mode == "IN only":
-            result: Any = run_profile(self.data, "IN", self.profile_in_var.get(), **common)
+            result: Any = run_profile(data, "IN", profile_in, **common)
         elif mode == "OUT only":
-            result = run_profile(self.data, "OUT", self.profile_out_var.get(), **common)
+            result = run_profile(data, "OUT", profile_out, **common)
         elif mode == "Push-pull":
             result = pushpull(
-                self.data,
+                data,
                 in_pump="IN",
                 out_pump="OUT",
-                profile_in=self.profile_in_var.get(),
-                profile_out=self.profile_out_var.get(),
-                out_delay=float(self.out_delay_var.get()),
+                profile_in=profile_in,
+                profile_out=profile_out,
+                out_delay=out_delay,
                 **common,
             )
         elif mode == "Two forward":
             result = [
-                run_profile(self.data, "IN", self.profile_in_var.get(), **common),
+                run_profile(data, "IN", profile_in, **common),
                 send_action(
-                    self.data,
+                    data,
                     "OUT",
                     "start-forward",
-                    profile_key=self.profile_out_var.get(),
+                    profile_key=profile_out,
                     profile_calc={},
                     **common,
                 ),
             ]
         else:
             raise ValueError(f"Unknown mode: {mode}")
+        return result
+
+    def _run_mode_succeeded(self, mode: str, result: Any) -> None:
+        self._operation_running = False
         self.append_log(self.run_log, json.dumps(result, ensure_ascii=False))
         self.set_status(f"Run mode completed: {mode}")
+
+    def _run_mode_failed(self, message: str) -> None:
+        self._operation_running = False
+        messagebox.showerror("Operation failed", message)
 
     def apply_gui_pump_settings(self) -> None:
         values = validate_pump_settings(
@@ -1623,7 +2264,7 @@ class A4PumpApp(tk.Tk):
                 func(*args)
             except Exception as exc:
                 message = str(exc)
-                self.after(0, lambda: messagebox.showerror("Operation failed", message))
+                self.post_ui(messagebox.showerror, "Operation failed", message)
             finally:
                 if guarded:
                     def finish() -> None:
@@ -1631,7 +2272,7 @@ class A4PumpApp(tk.Tk):
                         if hasattr(self, "experiment_start_button"):
                             self.experiment_start_button.configure(state="normal")
 
-                    self.after(0, finish)
+                    self.post_ui(finish)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1640,7 +2281,10 @@ class A4PumpApp(tk.Tk):
             box.insert("end", text + "\n")
             box.see("end")
 
-        self.after(0, update)
+        if threading.current_thread() is threading.main_thread():
+            update()
+        else:
+            self.post_ui(update)
 
     @staticmethod
     def float_or_none(value: str) -> float | None:

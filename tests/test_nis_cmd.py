@@ -17,6 +17,8 @@ def test_all_cmd_wrappers_are_crlf_one_line_commands_and_shared_config() -> None
         assert "^" not in text
         assert 'set "CFG=%ROOT%\\config"' in text
         assert "COM4" not in text and "COM5" not in text
+        assert " START " in text
+        assert " END " in text
         for line in text.splitlines():
             if line.strip().startswith('"%A4%"'):
                 assert line.strip().endswith("2>&1")
@@ -24,8 +26,17 @@ def test_all_cmd_wrappers_are_crlf_one_line_commands_and_shared_config() -> None
 
 def test_primary_wrappers_exist() -> None:
     for name in (
+        "pump_start_armed.cmd",
+        "pump_start_armed_after_300s.cmd",
+        "pump_cancel_pending.cmd",
         "pump_write_in_out.cmd",
         "pump_start_pushpull_fast30.cmd",
         "pump_stop_all.cmd",
     ):
         assert (ROOT / "nis_cmd" / name).is_file()
+
+
+def test_delayed_armed_wrapper_delegates_to_detached_scheduler() -> None:
+    text = (ROOT / "nis_cmd" / "pump_start_armed_after_300s.cmd").read_text(encoding="ascii")
+    assert "schedule-armed --delay-s 300" in text
+    assert "timeout " not in text.casefold()
