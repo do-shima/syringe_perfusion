@@ -4,7 +4,7 @@
       "enabled": true,
       "name": "Pump IN",
       "role": "stimulus_in",
-      "port": "COM9",
+      "port": "COMx",
       "baudrate": 9600,
       "terminator": "\\r\\n",
       "timeout": 1.0,

@@ -1,25 +1,17 @@
 NIS-Elements macro examples
 ===========================
 
-Replace `<A4PUMP_ROOT>` with the actual installation folder on the microscope PC.
+Replace <A4PUMP_ROOT> with the installation folder on the microscope PC.
+The wrappers read COM ports from <A4PUMP_ROOT>\config\pumps.json.
 
-Dry-run test:
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_test_dryrun.cmd");
+Write IN and OUT profiles:
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_write_in_out.cmd");
 
-Write Fast-30 before acquisition:
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_write_fast30.cmd");
-
-Start saved Fast-30 during acquisition:
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_fast30.cmd");
-
-Start saved Fast-30 using async wrapper:
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_fast30_async.cmd");
+Start push-pull Fast-30:
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_pushpull_fast30.cmd");
 
 Stop all:
 Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_stop_all.cmd");
 
-Start after 30 s using a recipe:
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_after_30s_recipe.cmd");
-
-Example:
-Int_ExecProgram("C:\A4PumpKit\nis_cmd\pump_start_fast30.cmd");
+Generic example:
+Int_ExecProgram("C:\A4PumpKit\nis_cmd\pump_stop_all.cmd");

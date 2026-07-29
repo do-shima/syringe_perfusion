@@ -8,9 +8,39 @@ Dependencies: Python + pyserial for source run; no Python needed for built app
 
 ## Overview
 
-A4/QHZS系シリンジポンプをUSB-TTL UART経由で制御する軽量Python/Windowsアプリです。V3.2では、GUI、CLI、Single Pump Mode、Manual Hold、Jog、速度・時間設定の書き込み、Recipe Builder、NIS-Elements連携、PyInstaller配布、アプリアイコン/アセット管理に対応しています。
+A4/QHZS系シリンジポンプをUSB-TTL UART経由で制御する軽量Python/Windowsアプリです。GUI、CLI、Single Pump Mode、Manual Hold、Jog、速度・時間設定の書き込み、Recipe Builder、NIS-Elements連携、PyInstaller配布、アプリアイコン/アセット管理に対応しています。
 
 研究室内の顕微鏡PCや実験用Windows PCで、追加GUI依存を増やさずに動かすことを前提にしています。
+
+## Active Config（GUI / CLI / NIS共通）
+
+GUI、CLI、NIS wrapperは、必ず1つのActive Config Directoryにある次の4ファイルを一組として読みます。
+
+- `pumps.json`
+- `profiles.json`
+- `syringes.json`
+- `recipes.json`
+
+標準のWindows配布先は `<A4PUMP_ROOT>\config` です。GUIのSetup画面でCOM設定を保存すると、その外部 `pumps.json` をatomic置換し、バックアップ `pumps.json.bak` を作ります。CLIを再起動すれば同じJSONを読み、外部エディタで変更した内容はGUIの `Reload from JSON` で反映されます。`_internal\default_config` または旧 `_internal\config` は初期コピー元であり、直接編集しません。
+
+`--config-dir` 省略時の共通探索順は次の通りです。
+
+1. APIまたはCLIの明示 `--config-dir`
+2. 環境変数 `A4PUMP_CONFIG_DIR`
+3. GUIで選択し `%LOCALAPPDATA%\A4PumpControl\settings.json` に保存された場所
+4. exe-adjacent `<A4PUMP_ROOT>\config`
+5. `%LOCALAPPDATA%\A4PumpControl\config`
+6. Source実行時のみリポジトリの `config`
+7. packaged default（コピー元のみ。Active Configにはしない）
+
+Frozen版は起動時のcurrent directoryを探索に使いません。診断:
+
+```powershell
+a4ctl.exe config-path
+a4ctl.exe config-path --json
+```
+
+GUIで別のActive Configを選んだ場合、CLI省略時のresolverはその保存済み選択を使います。一方、NIS wrapperは再現性のため常に `--config-dir` を明示するので、Setup画面の `Copy NIS CFG line` でwrapperのCFGも同じ場所へ合わせてください。
 
 ## Key Features
 
@@ -36,7 +66,7 @@ A4/QHZS系シリンジポンプをUSB-TTL UART経由で制御する軽量Python/
 - A4 pump control confirmed from PowerShell and NIS macro
 - PowerShell and NIS macro execution confirmed
 - The actual COM port and installation directory depend on the microscope PC.
-- Set `config/pumps.json` and local `.cmd` wrappers accordingly.
+- Set the shared Active Config through GUI Setup; tracked `.cmd` wrappers do not contain COM settings.
 
 In this document, `<A4PUMP_ROOT>` denotes the installation folder of the built application. For example, `C:\A4PumpKit`.
 
@@ -44,6 +74,7 @@ Recommended structure:
 
 ```text
 <A4PUMP_ROOT>\
+  A4PumpGUI.exe
   a4ctl\
     a4ctl.exe
   config\
@@ -53,19 +84,12 @@ Recommended structure:
     recipes.json
   nis_cmd\
     00_check_paths.cmd
-    pump_list_ports.cmd
     pump_test_dryrun.cmd
-    pump_write_fast30.cmd
-    pump_start_fast30.cmd
-    pump_start_fast30_async.cmd
-    pump_start_fast30_worker.cmd
+    pump_write_in_out.cmd
+    pump_start_pushpull_fast30.cmd
     pump_stop_all.cmd
-    pump_jog_forward_500ms.cmd
-    pump_jog_forward_500ms_dryrun.cmd
-    pump_start_after_30s_recipe.cmd
-  recipes\
-    nis_start_after_30s.json
   nis_logs\
+  _internal\
 ```
 
 The actual COM port depends on the Windows PC. Check it with `list-ports` and set `config/pumps.json` accordingly. For example, set `IN.port` to `COMx`, where `COMx` is the USB-TTL adapter port shown by Windows Device Manager or `a4ctl list-ports`.
@@ -137,17 +161,21 @@ PyInstaller one-folder build:
 scripts\build_windows.bat
 ```
 
-Generated applications:
+Generated kit:
 
 ```text
 dist\A4PumpGUI\A4PumpGUI.exe
-dist\a4ctl\a4ctl.exe
+dist\A4PumpGUI\a4ctl\a4ctl.exe
+dist\A4PumpGUI\config\
+dist\A4PumpGUI\nis_cmd\
 ```
 
 Notes:
 
 - `A4PumpGUI.exe` is the GUI app.
 - `a4ctl.exe` is the CLI app used by NIS `.cmd` wrappers.
+- Rebuilding fills only missing external config files; it does not overwrite existing JSON.
+- Bundled `_internal\default_config` is a first-run copy source only.
 - `assets` are included in the build.
 - `assets/icons/app.ico` is used as the executable icon if present.
 - `pathlib` backport package can break PyInstaller. If needed, remove it with `pip uninstall pathlib` or `conda remove pathlib`.
@@ -180,7 +208,8 @@ dist\A4PumpGUI\A4PumpGUI.exe
 CLI:
 
 ```powershell
-dist\a4ctl\a4ctl.exe list-ports
+dist\A4PumpGUI\a4ctl\a4ctl.exe config-path
+dist\A4PumpGUI\a4ctl\a4ctl.exe list-ports
 ```
 
 ## Quick Start: CLI
@@ -243,11 +272,12 @@ Path and COM-port policy for committed documentation:
 Representative NIS macro examples:
 
 ```text
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_test_dryrun.cmd");
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_write_fast30.cmd");
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_fast30.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_write_in_out.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_pushpull_fast30.cmd");
 Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_stop_all.cmd");
 ```
+
+各 `.cmd` はscript位置からROOTを解決し、`set "CFG=%ROOT%\config"` と `--config-dir "%CFG%"` を使用します。Windows batchの行継続 `^` は使用せず、1 a4ctl command = 1 line、CRLFです。tracked wrapperに個人パスやCOM番号は書きません。
 
 Recommended acquisition mode:
 
@@ -308,6 +338,14 @@ GUI supports IN-only single pump operation.
 - Recipe Builder validates disabled pump usage before dry-run and run.
 
 Pump enable state is stored in `config/pumps.json` and can also be changed from the GUI.
+
+## GUI layout
+
+- **Experiment**: LIVE / DRY-RUN、共有config、IN/OUT状態、run mode、profiles、Write IN + OUT profiles、START、STOP ALL、直近ログ。
+- **Setup**: Active Configの完全パスとsource、CLI共有状態、NIS CFG、COM/baudrate/terminator/timeout、安全保存・Reload、接続テスト、Manual/Jog。
+- **Advanced**: Profiles、Calculator、Recipes。低頻度項目はスクロール可能です。
+
+STOP ALLは全画面共通の固定領域にあり、Escも維持します。900 x 600でもExperimentの主要操作が見えるよう、起動時画面をExperimentにしています。
 
 ## Recipe Builder
 
@@ -400,7 +438,7 @@ Main entry points:
 ## Development Status
 
 - Version: V3.2
-- Tests: pytest 57 passed
+- Tests: pytest 72 passed
 - GUI exe build confirmed
 - NIS macro execution confirmed
 - PowerShell and NIS macro both confirmed to control pump

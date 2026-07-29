@@ -24,6 +24,8 @@ pip-wheel-metadata/
 # Ignore by default. If you later customize a .spec file for reproducible builds,
 # remove this line and commit that .spec file.
 *.spec
+!A4PumpGUI.spec
+!a4ctl.spec
 
 # -----------------------------
 # Virtual environments

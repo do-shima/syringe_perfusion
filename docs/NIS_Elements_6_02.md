@@ -1,259 +1,92 @@
 # NIS-Elements 6.02 integration
 
-## Purpose
+## Shared Active Config
 
-This document describes the validated NIS-Elements 6.02 workflow for triggering A4 syringe pump control from ND Acquisition.
+NIS-Elements runs a tracked `.cmd` wrapper with `Int_ExecProgram`. The wrapper calls `a4ctl.exe` and always passes the same external config used by the standard GUI installation:
 
-The recommended project workflow is:
+```bat
+for %%I in ("%~dp0..") do set "ROOT=%%~fI"
+set "A4=%ROOT%\a4ctl\a4ctl.exe"
+set "CFG=%ROOT%\config"
+set "LOGDIR=%ROOT%\nis_logs"
+set "LOG=%LOGDIR%\nis_exec.log"
+```
 
-1. NIS-Elements runs a `.cmd` file with `Int_ExecProgram`.
-2. The `.cmd` wrapper calls `a4ctl.exe`.
-3. `a4ctl.exe` reads configuration from an explicit `--config-dir`.
-4. Pump-side logs are written separately from NIS wrapper logs.
+`CFG` contains `pumps.json`, `profiles.json`, `syringes.json`, and `recipes.json`. These four files are managed as one directory. Do not create `nis_cmd\config`, do not edit `_internal\default_config`, and do not hard-code COM ports in wrappers.
 
-## Confirmed environment
+GUI Setup displays the Active Config and provides `Copy NIS CFG line`. If the GUI is switched away from `<A4PUMP_ROOT>\config`, update the NIS wrapper CFG deployment to the same path. Confirm both sides with:
 
-- NIS-Elements 6.02
-- `Int_ExecProgram` confirmed
-- PowerShell execution confirmed
-- `.cmd` execution from NIS confirmed
-- `.cmd` execution from PowerShell confirmed
-- Pump control from both PowerShell and NIS macro confirmed
-- The actual COM port and installation directory depend on the microscope PC.
-- Set `config/pumps.json` and local `.cmd` wrappers accordingly.
+```powershell
+<A4PUMP_ROOT>\a4ctl\a4ctl.exe --config-dir "<A4PUMP_ROOT>\config" config-path
+```
 
-In this document, `<A4PUMP_ROOT>` denotes the installation folder of the built application. For example, `C:\A4PumpKit`.
-
-The actual COM port depends on the Windows PC. Check it with `list-ports` and set `config/pumps.json` accordingly. For example, set `IN.port` to `COMx`, where `COMx` is the USB-TTL adapter port shown by Windows Device Manager or `a4ctl list-ports`.
-
-## Directory layout
+## Distribution
 
 ```text
 <A4PUMP_ROOT>\
+  A4PumpGUI.exe
   a4ctl\
     a4ctl.exe
   config\
+    pumps.json
+    profiles.json
+    syringes.json
+    recipes.json
   nis_cmd\
-  recipes\
+    00_check_paths.cmd
+    pump_test_dryrun.cmd
+    pump_write_in_out.cmd
+    pump_start_pushpull_fast30.cmd
+    pump_stop_all.cmd
   nis_logs\
+  _internal\
 ```
 
-## Required files
-
-- `<A4PUMP_ROOT>\a4ctl\a4ctl.exe`
-- `<A4PUMP_ROOT>\config\pumps.json`
-- `<A4PUMP_ROOT>\config\profiles.json`
-- `<A4PUMP_ROOT>\config\syringes.json`
-- `<A4PUMP_ROOT>\config\recipes.json`
-- `.cmd` wrappers in `<A4PUMP_ROOT>\nis_cmd\`
-- Optional recipe file: `<A4PUMP_ROOT>\recipes\nis_start_after_30s.json`
-- Log directory: `<A4PUMP_ROOT>\nis_logs\`
-
-Run `00_check_paths.cmd` first after copying files or changing the root directory.
-
-## Macro syntax
-
-NIS-Elements 6.02 runs an external file with:
-
-```text
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_fast30.cmd");
-```
-
-Replace `<A4PUMP_ROOT>` with the actual installation folder on the microscope PC. A generic Windows example is:
-
-```text
-Int_ExecProgram("C:\A4PumpKit\nis_cmd\pump_start_fast30.cmd");
-```
-
-If path problems occur, first test with:
-
-```text
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_test_dryrun.cmd");
-```
-
-Then check:
-
-```text
-<A4PUMP_ROOT>\nis_logs\nis_exec.log
-```
-
-Important behavior:
-
-- `Int_ExecProgram` executes an external file only.
-- NIS does not directly report external process launch success.
-- NIS does not directly report external process completion.
-- In ND Acquisition, NIS time counting continues while the external file is running.
-- External file launch has a small lag.
-
-## Recommended ND Acquisition setup
-
-Use this method when imaging should continue while stimulation starts. This is the standard recommended workflow for this project.
-
-1. Open ND Acquisition.
-2. Create two time phases.
-3. Configure the timelapse settings for each phase.
-4. Open Advanced.
-5. Set `Advanced for` to Time Phase 2.
-6. Insert the macro in `Execute before Time phase`.
-7. Use `pump_start_fast30.cmd` as the external command.
-8. Run the acquisition.
-
-Example macro:
-
-```text
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_fast30.cmd");
-```
-
-Behavior:
-
-- `pump_start_fast30.cmd` is executed immediately before Time Phase 2.
-- Imaging continues during Time Phase 2.
-- External launch has a small lag.
-- Use a dye test to measure the actual liquid arrival frame.
-- Prefer a direct start command over a recipe wait when NIS can schedule the phase boundary.
-
-## Alternative No Acquisition phase setup
-
-Use this method when imaging should stop during external command execution, or when a non-imaging phase should be explicit.
-
-1. Open ND Acquisition.
-2. Create three time phases.
-3. Set Phase 2 to `No Acquisition`.
-4. Open Advanced.
-5. Set `Advanced for` to Time Phase 2.
-6. Insert the macro in `Execute before Time phase`.
-7. Set Phase 2 duration long enough to cover the external command execution.
-8. Run the acquisition.
-
-Behavior:
-
-- The external file is launched before Phase 2.
-- Imaging is not performed during Phase 2.
-- Phase 2 duration should include the expected external command runtime.
-- External file launch has a small lag.
-
-This method is useful for non-imaging write or setup commands.
+The actual COM names differ on each PC. Configure them in GUI Setup and save to `<A4PUMP_ROOT>\config\pumps.json`. The public defaults and wrappers do not contain the local IN/OUT COM numbers.
 
 ## Macro examples
 
-Dry-run:
-
 ```text
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_test_dryrun.cmd");
-```
-
-Write Fast-30:
-
-```text
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_write_fast30.cmd");
-```
-
-Start saved Fast-30:
-
-```text
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_fast30.cmd");
-```
-
-Async start:
-
-```text
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_fast30_async.cmd");
-```
-
-Stop all:
-
-```text
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_write_in_out.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_pushpull_fast30.cmd");
 Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_stop_all.cmd");
 ```
 
-Start after 30 s using recipe:
+Generic Windows example:
 
 ```text
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_after_30s_recipe.cmd");
+Int_ExecProgram("C:\A4PumpKit\nis_cmd\pump_stop_all.cmd");
 ```
 
-## Preflight checklist
+Run `00_check_paths.cmd` and `pump_test_dryrun.cmd` before live use. Check `<A4PUMP_ROOT>\nis_logs\nis_exec.log`; every wrapper records `CONFIG=<CFG>`, command output/error, and exit code.
 
-- USB-TTL adapter connected to the same USB port
-- COM port confirmed
-- `config/pumps.json` `IN.port` updated
-- `pump_list_ports.cmd` run
-- `pump_test_dryrun.cmd` run
-- `pump_write_fast30.cmd` run
-- A4 LCD speed/time checked
-- Tubing primed
-- Needle and waste path checked
-- Jog test performed if safe
-- `pump_stop_all.cmd` tested
+## Wrapper rules
+
+- Resolve ROOT from `%~dp0`; never depend on the NIS current directory.
+- Always use `--config-dir "%CFG%"`.
+- One `a4ctl` command per physical line.
+- Never use the batch continuation character `^`.
+- Store tracked files as ASCII and CRLF.
+- Do not include personal paths or COM numbers.
+- Return the `a4ctl` exit code.
+- In `pump_write_in_out.cmd`, an IN failure prevents the OUT write.
 
 ## Experiment workflow
 
-Before acquisition:
+1. Open GUI Setup, select and save the IN/OUT ports.
+2. Confirm GUI Active Config is `<A4PUMP_ROOT>\config`.
+3. Run `00_check_paths.cmd`.
+4. Run `pump_test_dryrun.cmd`.
+5. Run `pump_write_in_out.cmd` and verify both A4 displays.
+6. Let NIS call `pump_start_pushpull_fast30.cmd` at the chosen phase boundary.
+7. Use `pump_stop_all.cmd` when required.
 
-1. Run `pump_write_fast30.cmd`.
-2. Confirm A4 display speed/time.
-3. Prime the line and check needle/waste path.
+NIS only launches the external wrapper; it does not directly confirm completion. External launch has a small lag, so validate liquid-arrival timing with a dye test.
 
-During acquisition:
+## Safety
 
-1. NIS executes `pump_start_fast30.cmd` before the selected phase.
-2. A4 starts the saved Fast-30 profile.
-
-After acquisition:
-
-1. Run `pump_stop_all.cmd` if needed.
-2. Save the ND2 file and copy logs.
-
-## Troubleshooting
-
-PowerShell works but NIS does not:
-
-- Check the `Int_ExecProgram` path.
-- Check the folder spelling: `Syringe_pump`.
-- Check `nis_logs\nis_exec.log`.
-- Test with `pump_test_dryrun.cmd`.
-
-COM list is not obtained:
-
-- Run `pump_list_ports.cmd` in PowerShell.
-- Check the config path.
-- Check the `a4ctl.exe` path.
-
-Pump does not move:
-
-- Confirm the COM port.
-- Confirm `pump_write_fast30.cmd` was run.
-- Confirm the A4 LCD speed/time.
-- Confirm dry-run is not being used.
-
-NIS appears to ignore execution:
-
-- Remember that `Int_ExecProgram` cannot directly report status.
-- Check `nis_logs\nis_exec.log`.
-
-Timing is shifted:
-
-- A small launch lag is expected.
-- Use a dye arrival test.
-- Prefer a direct start command over recipe wait if NIS can schedule the phase boundary.
-
-## Known limitations
-
-- NIS does not directly return process status.
-- NIS cannot confirm external file completion.
-- There is external launch lag.
-- Current logs are separate.
-- Log unification is future work.
-
-## Logging status
-
-Current logging is intentionally split:
-
-1. `nis_logs\nis_exec.log`
-   - Created by `.cmd` wrappers.
-   - Records NIS-side execution start/end and exit code.
-2. `logs\a4pump_YYYYMMDD.csv`
-   - Created by `a4ctl` and `A4PumpGUI`.
-   - Records pump commands, profiles, dry-run, command hex, responses, recipe IDs, and block IDs.
-
-Do not treat these as one combined log. Log unification is future work.
+- Verify IN and OUT are different USB serial ports.
+- Confirm tubing, priming, syringe direction, and waste path.
+- Start with dry-run and a non-biological setup.
+- Keep GUI STOP ALL / Esc and `pump_stop_all.cmd` available.
+- Actual UART/live behavior requires an explicit hardware test and is not exercised by pytest.

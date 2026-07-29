@@ -7,7 +7,7 @@ import time
 from typing import Any
 
 from .a4 import A4Pump, list_serial_ports, pump_from_config
-from .config import load_config
+from .config import load_config, resolve_config
 from .logger import log_command
 from .profiles import calculate, calculate_profile, result_to_dict, ul_per_mm_from_inner_diameter
 from .recipe_engine import RecipeEngine
@@ -29,6 +29,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="a4ctl", description="A4 syringe pump control CLI")
     parser.add_argument("--config-dir", default=None, help="Path to config directory")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    config_path_parser = subparsers.add_parser("config-path", help="Show the shared Active Config directory")
+    config_path_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON")
 
     subparsers.add_parser("list-ports", help="List available serial ports")
 
@@ -121,6 +124,20 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def dispatch(args: argparse.Namespace) -> int:
+    if args.command == "config-path":
+        resolution = resolve_config(args.config_dir)
+        if args.json:
+            print(json.dumps(resolution.to_dict(), ensure_ascii=False, indent=2))
+        else:
+            print(f"Active config directory: {resolution.active_config_dir}")
+            print(f"pumps.json: {resolution.active_pumps_json}")
+            print(f"source: {resolution.source}")
+            print(f"writable: {str(resolution.writable).lower()}")
+            print(f"required files present: {str(resolution.required_files_present).lower()}")
+            if resolution.missing_files:
+                print(f"missing files: {', '.join(resolution.missing_files)}")
+        return 0
+
     if args.command == "list-ports":
         for port in list_serial_ports():
             print(f"{port['device']}\t{port['description']}\t{port['hwid']}")
