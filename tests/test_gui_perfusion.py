@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 from gui_app_helper import make_app
@@ -41,15 +42,23 @@ def test_startup_scan_is_background_and_keeps_saved_undetected(
 ) -> None:
     active = make_active(tmp_path)
 
+    scan_started = Event()
+    release_scan = Event()
+    scan_finished = Event()
+
     def slow_scan():
-        time.sleep(0.15)
+        scan_started.set()
+        assert release_scan.wait(1)
+        scan_finished.set()
         return [{"device": "COM2", "description": "Detected", "hwid": "HW2"}]
 
     monkeypatch.setattr("syringe_perfusion.gui.list_serial_ports", slow_scan)
-    started = time.monotonic()
     app = make_app()
     try:
-        assert time.monotonic() - started < 0.15
+        settle(app, scan_started.is_set)
+        assert not scan_finished.is_set()
+        assert app.winfo_exists()
+        release_scan.set()
         app.config_resolution = validate_config_directory(active)
         app.reload_from_json(confirm=False)
         settle(app, lambda: not getattr(app, "_port_scan_running", False))

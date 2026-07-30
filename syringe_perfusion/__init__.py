@@ -1,3 +1,5 @@
 """A4 syringe pump control package."""
 
-__version__ = "0.1.0"
+from .app_info import package_version
+
+__version__ = package_version()

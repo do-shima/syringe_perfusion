@@ -9,6 +9,7 @@ from threading import Event
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any
 
+from .app_info import format_build_identity, get_build_info
 from .calibration import (
     apply_syringe_calibration,
     balance_result,
@@ -105,6 +106,21 @@ class CommissioningFrame(ttk.Frame):
             variable=self.app.require_current_commissioning_var,
             command=self.app.save_commissioning_policy,
         ).grid(row=5, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        self.build_identity_var = tk.StringVar(value=format_build_identity(get_build_info()))
+        ttk.Label(
+            header,
+            textvariable=self.build_identity_var,
+            style="Card.TLabel",
+            justify="left",
+        ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        ttk.Button(
+            header,
+            text="Copy build identity",
+            command=lambda: self.app._copy_text(
+                self.build_identity_var.get(),
+                "commissioning build identity",
+            ),
+        ).grid(row=6, column=3, sticky="e", padx=4)
 
         identity = create_card(
             self,

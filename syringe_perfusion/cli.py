@@ -5,8 +5,10 @@ import json
 import sys
 from typing import Any
 
+from .app_info import get_build_info
 from .config import load_config, resolve_config
 from .coordinator import OperationCoordinator
+from .diagnostics import diagnostics_summary, export_diagnostics, format_diagnostics_summary
 from .operations import (
     call_action,
     cancel_pending,
@@ -37,6 +39,11 @@ from .validation_store import ValidationStore
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="a4ctl", description="A4 syringe pump control CLI")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=_cli_version_text(),
+    )
     parser.add_argument("--config-dir", default=None, help="Path to the shared Active Config directory")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -66,6 +73,18 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("--dish-id", default="")
     history.add_argument("--condition", default="")
     history.add_argument("--json", action="store_true")
+
+    diagnostics = subparsers.add_parser(
+        "diagnostics-summary",
+        help="Read-only build, config, preflight, and runtime summary",
+    )
+    diagnostics.add_argument("--json", action="store_true")
+
+    export_diagnostics_parser = subparsers.add_parser(
+        "export-diagnostics",
+        help="Export a sanitized read-only diagnostic ZIP",
+    )
+    export_diagnostics_parser.add_argument("--output", required=True)
 
     start_armed = subparsers.add_parser("start-armed", help="Start the persisted ARMED plan without reprogramming")
     add_run_metadata_args(start_armed)
@@ -157,6 +176,21 @@ def add_run_metadata_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dish-id", default="")
     parser.add_argument("--condition", default="")
     parser.add_argument("--trigger-source", default="CLI")
+
+
+def _cli_version_text() -> str:
+    info = get_build_info()
+    return (
+        f"{info.get('application_name', 'A4PumpControl')} "
+        f"{info.get('human_version', '')}; "
+        f"package {info.get('package_version', '')}; "
+        f"commit {info.get('git_commit_short') or 'unknown'}; "
+        f"{'dirty' if info.get('git_dirty') is True else 'clean' if info.get('git_dirty') is False else 'cleanliness unknown'}; "
+        f"build type {info.get('build_type', '')}; "
+        f"control compatibility {info.get('control_compatibility_version', '')}; "
+        f"Python {info.get('python_version', '')}; "
+        f"build fingerprint {info.get('build_identity_fingerprint', '')}"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -252,6 +286,18 @@ def dispatch(args: argparse.Namespace) -> int:
                         )
                     )
                 )
+        return 0
+
+    if args.command == "diagnostics-summary":
+        summary = diagnostics_summary(resolution)
+        if args.json:
+            print(json.dumps(summary, ensure_ascii=True, indent=2))
+        else:
+            _print_console_safe(format_diagnostics_summary(summary))
+        return 0
+
+    if args.command == "export-diagnostics":
+        print(export_diagnostics(resolution, args.output))
         return 0
 
     if args.command == "start-armed":

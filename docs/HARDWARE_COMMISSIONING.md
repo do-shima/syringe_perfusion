@@ -27,7 +27,7 @@ Commissioning files are created only beneath the shared Active Config:
 
 They are not required by `load_config()`, not packaged as writable defaults, and not committed. Current JSON state uses UTF-8 atomic replacement. Events and measurements use process-safe append locking. Reports are available as JSON, CSV, and Markdown.
 
-Every record identifies the operator, application/build, Active Config and fingerprint, COM/identity metadata, serial settings, syringe calibration, tests, measurements, confirmations, failures, acknowledgements, and stale reasons. Do not store secrets.
+Every new schema-v2 record identifies the operator, release/package version, build commit, clean/dirty state, build timestamp/fingerprint, control compatibility, Active Config and fingerprint, COM/identity metadata, serial settings, syringe calibration, tests, measurements, confirmations, failures, acknowledgements, and stale reasons. Schema-v1 records remain readable and are not rewritten merely by opening them. Do not store secrets.
 
 ## Recommended commissioning sequence
 
@@ -130,7 +130,7 @@ Software can verify paths and exit codes. Actual NIS execution and display appea
 
 ## Staleness and production policy
 
-Relevant evidence becomes STALE when dependent COM/HWID, baudrate, terminator, timeout, syringe key/calibration, direction assignment, relevant config fingerprint, or materially relevant application version changes. Unrelated UI display preferences do not invalidate evidence. Previous records remain in history.
+Relevant evidence becomes STALE when dependent COM/HWID, baudrate, terminator, timeout, syringe key/calibration, direction assignment, relevant config fingerprint, or `control_compatibility_version` changes. This compatibility identifier changes only for materially relevant UART, flow, direction, START/STOP, timing, or calibration interpretation behavior. A documentation-only commit does not invalidate physical flow evidence. Schema-v1 evidence predating compatibility tracking is reported stale rather than silently assumed compatible. Unrelated UI display preferences do not invalidate evidence. Previous records remain in history.
 
 Preflight classifications:
 
@@ -152,6 +152,8 @@ a4ctl.exe --config-dir "<CFG>" preflight [--json] [--require-commissioned]
 a4ctl.exe --config-dir "<CFG>" validation-status [--json]
 a4ctl.exe --config-dir "<CFG>" export-validation --format json|csv|markdown --output "<PATH>"
 a4ctl.exe --config-dir "<CFG>" recent-runs --limit 20 [--json]
+a4ctl.exe --config-dir "<CFG>" diagnostics-summary
+a4ctl.exe --config-dir "<CFG>" export-diagnostics --output "<PATH>.zip"
 ```
 
 Recent history is derived from existing command and state-transition logs, newest first. It can be filtered and exported without deleting source history.
@@ -159,3 +161,5 @@ Recent history is derived from existing command and state-transition logs, newes
 ## Remaining manual responsibility
 
 Automated tests and build smoke checks do not validate physical motion, delivered flow, motor-stop latency, tubing behavior, balance, NIS execution, or microscope display usability. Perform these checks with safe fluid paths, conservative limits, a visible global STOP, and the laboratory’s physical emergency procedure.
+
+Before recording physical evidence, use **About / Diagnostics** or **Copy build identity** on the Commissioning page to capture release, short commit, build timestamp, clean/dirty status, control compatibility, and build fingerprint. Confirm the artifact SHA-256 from the release checksum file; the GUI does not repeatedly hash the ZIP.

@@ -25,3 +25,5 @@ Tracked wrappers intentionally use `%ROOT%\config`. A custom GUI Active Config d
 STOP cancellation is persisted and ordered against the final START UART-write gate. Persisted active/pending/armed target snapshots are used before editable config, and every unique STOP target is attempted independently. `COMPLETED_ESTIMATED` means programmed time elapsed without hardware readback.
 
 Commissioning and calibration remain GUI-oriented and are intentionally not exposed through NIS wrappers. Before installing macros, use the built CLI read-only commands `preflight` and `validation-status`, then complete and archive the Setup → Commissioning workstation checklist. NIS exit codes and UART completion do not prove physical direction, delivered flow, or physical STOP.
+
+For a validation release, record `a4ctl.exe --version`, the future tag-style version, commit, and ZIP SHA-256 before editing the workstation’s local CFG line. Standard wrappers are replaced on upgrade; keep workstation-specific wrapper changes under `nis_cmd\local` or in `*_local.cmd` files so the upgrade helper preserves them.

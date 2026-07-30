@@ -89,6 +89,29 @@ def test_stop_remains_available_while_commissioning_operation_active() -> None:
         app.destroy()
 
 
+def test_about_dialog_shows_build_identity_without_constructing_pump(monkeypatch) -> None:
+    app = make_app()
+    constructed: list[bool] = []
+    try:
+        monkeypatch.setattr(
+            "syringe_perfusion.a4.A4Pump.__init__",
+            lambda *_args, **_kwargs: constructed.append(True),
+        )
+        app.show_about_dialog()
+        app.update_idletasks()
+        assert app._about_dialog.winfo_exists()
+        text_widgets = [
+            widget for widget in app._about_dialog.winfo_children() if widget.winfo_class() == "Text"
+        ]
+        assert text_widgets
+        contents = text_widgets[0].get("1.0", "end")
+        assert "release_version: 0.2.0-beta.1" in contents
+        assert "control_compatibility: 1" in contents
+        assert constructed == []
+    finally:
+        app.destroy()
+
+
 def test_close_during_commissioning_requests_cancellation_and_stop(monkeypatch) -> None:
     app = make_app()
     cancelled: list[bool] = []

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
+from .app_info import CONTROL_COMPATIBILITY_VERSION, get_build_info
 from .config import ConfigResolution, load_config, resolve_config
 from .perfusion_state import config_fingerprint, process_exists, read_json, read_state, runtime_paths
 from .validation_store import ValidationStore
@@ -158,27 +159,31 @@ def assess_preflight(
         data = load_config(resolution)
         fingerprint = config_fingerprint(resolution.active_config_dir)
     except Exception as exc:
-        return _result(
-            [{"level": "BLOCK", "code": "INVALID_ACTIVE_CONFIG", "message": str(exc)}],
-            require_commissioned,
+        return _with_build(
+            _result(
+                [{"level": "BLOCK", "code": "INVALID_ACTIVE_CONFIG", "message": str(exc)}],
+                require_commissioned,
+            )
         )
     lock = read_json(runtime_paths(resolution.active_config_dir).run_lock)
     lock_pid = int((lock or {}).get("pid", 0) or 0)
     ports = list(detected_ports or [])
-    return evaluate_preflight(
-        data,
-        runtime_state=read_state(resolution.active_config_dir),
-        validation_status=ValidationStore(resolution).status(
-            data=data,
+    return _with_build(
+        evaluate_preflight(
+            data,
+            runtime_state=read_state(resolution.active_config_dir),
+            validation_status=ValidationStore(resolution).status(
+                data=data,
+                detected_ports=ports,
+            ),
+            current_fingerprint=fingerprint,
             detected_ports=ports,
-        ),
-        current_fingerprint=fingerprint,
-        detected_ports=ports,
-        require_commissioned=require_commissioned,
-        dry_run=dry_run,
-        custom_active_config=resolution.source not in {"source_repository", "exe_adjacent"},
-        live_lock=lock,
-        live_lock_owner_alive=bool(lock_pid and process_exists(lock_pid)),
+            require_commissioned=require_commissioned,
+            dry_run=dry_run,
+            custom_active_config=resolution.source not in {"source_repository", "exe_adjacent"},
+            live_lock=lock,
+            live_lock_owner_alive=bool(lock_pid and process_exists(lock_pid)),
+        )
     )
 
 
@@ -192,6 +197,20 @@ def format_preflight(result: dict[str, Any]) -> str:
         for item in result["findings"]
     )
     return "\n".join(lines)
+
+
+def _with_build(result: dict[str, Any]) -> dict[str, Any]:
+    build = get_build_info()
+    return {
+        **result,
+        "application": {
+            "human_version": build.get("human_version", ""),
+            "package_version": build.get("package_version", ""),
+            "git_commit_short": build.get("git_commit_short", ""),
+            "build_identity_fingerprint": build.get("build_identity_fingerprint", ""),
+            "control_compatibility_version": CONTROL_COMPATIBILITY_VERSION,
+        },
+    }
 
 
 def _add(findings: list[dict[str, str]], level: str, code: str, message: str) -> None:

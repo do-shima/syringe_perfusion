@@ -55,7 +55,7 @@ def test_validation_schema_round_trip_atomic_history_and_unknown_fields(tmp_path
     store.save(record)
     loaded = store.load()
     assert loaded is not None
-    assert loaded["schema_version"] == 1
+    assert loaded["schema_version"] == 2
     assert loaded["future_field"] == {"preserved": True}
     loaded["notes"].append("second save")
     store.save(loaded)

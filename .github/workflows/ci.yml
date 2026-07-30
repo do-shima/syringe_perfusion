@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  A4PUMP_CI: "1"
+  A4PUMP_DRY_RUN: "1"
+
+jobs:
+  tests:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - name: Run tests (Windows)
+        if: runner.os == 'Windows'
+        run: python -m pytest -q
+      - name: Run tests (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m pytest -q
+
+  static-validation:
+    name: Wrapper and artifact safety
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python scripts/static_release_checks.py
+      - run: git diff --check
+
+  windows-build:
+    name: Windows PyInstaller smoke
+    runs-on: windows-latest
+    needs:
+      - tests
+      - static-validation
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - name: Build one-folder applications
+        shell: cmd
+        run: scripts\build_windows.bat
+      - name: Packaged CLI smoke
+        shell: pwsh
+        run: |
+          build\pyinstaller-dist\a4ctl\a4ctl.exe --version
+          build\pyinstaller-dist\a4ctl\a4ctl.exe --config-dir config config-path --json
+          build\pyinstaller-dist\a4ctl\a4ctl.exe --config-dir config validation-status --json
+          build\pyinstaller-dist\a4ctl\a4ctl.exe --config-dir config recent-runs --limit 20 --json
+          build\pyinstaller-dist\a4ctl\a4ctl.exe --config-dir config diagnostics-summary
+      - name: Reject local evidence in CI artifact
+        shell: pwsh
+        run: |
+          if (Test-Path build\pyinstaller-dist\A4PumpGUI\config\runtime) { throw "runtime data included" }
+          if (Test-Path build\pyinstaller-dist\A4PumpGUI\config\validation) { throw "validation data included" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: A4PumpControl-windows-ci
+          path: build/pyinstaller-dist/
+          if-no-files-found: error
+          retention-days: 7

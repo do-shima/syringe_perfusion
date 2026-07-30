@@ -4,7 +4,6 @@ import csv
 import io
 import json
 import os
-import subprocess
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -12,7 +11,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from .app_info import APP_VERSION
+from .app_info import (
+    APP_VERSION,
+    CONTROL_COMPATIBILITY_VERSION,
+    get_build_info,
+    package_version,
+)
 from .calibration import flow_point_status
 from .commissioning import (
     NOT_VALIDATED,
@@ -24,7 +28,7 @@ from .config import ConfigResolution, load_config, resolve_config
 from .perfusion_state import process_file_lock
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ExportFormat = Literal["json", "csv", "markdown"]
 
 
@@ -125,12 +129,17 @@ class ValidationStore:
             data,
             config_dir=str(self.resolution.active_config_dir),
             application_version=APP_VERSION,
+            control_compatibility_version=CONTROL_COMPATIBILITY_VERSION,
         )
         for role, pump in pumps.items():
             if role in dependencies["pumps"]:
                 dependencies["pumps"][role]["hardware_identity"] = dict(
                     pump.get("hardware_identity") or {}
                 )
+        build_identity = dict(get_build_info())
+        if build_id is not None:
+            build_identity["git_commit"] = build_id
+            build_identity["git_commit_short"] = build_id[:7]
         record = {
             "schema_version": SCHEMA_VERSION,
             "validation_id": actual_validation_id,
@@ -141,7 +150,17 @@ class ValidationStore:
             "operator": operator,
             "laboratory_or_workstation_note": laboratory_note,
             "application_version": APP_VERSION,
-            "build_identifier": build_identifier() if build_id is None else build_id,
+            "human_version": APP_VERSION,
+            "package_version": package_version(),
+            "build_identifier": build_identity.get("git_commit_short", ""),
+            "build_identity": build_identity,
+            "build_commit": build_identity.get("git_commit", ""),
+            "build_dirty": build_identity.get("git_dirty"),
+            "build_timestamp_utc": build_identity.get("build_timestamp_utc", ""),
+            "build_identity_fingerprint": build_identity.get(
+                "build_identity_fingerprint", ""
+            ),
+            "control_compatibility_version": CONTROL_COMPATIBILITY_VERSION,
             "active_config_path": str(self.resolution.active_config_dir),
             "config_fingerprint": dependencies["config_fingerprint"],
             "dependencies": dependencies,
@@ -265,6 +284,7 @@ class ValidationStore:
             config_data,
             config_dir=str(self.resolution.active_config_dir),
             application_version=APP_VERSION,
+            control_compatibility_version=CONTROL_COMPATIBILITY_VERSION,
         )
         detected = {
             str(item.get("device", "")).casefold(): item for item in (detected_ports or [])
@@ -340,18 +360,8 @@ class ValidationStore:
 
 
 def build_identifier() -> str:
-    value = os.environ.get("A4PUMP_BUILD_ID", "").strip()
-    if value:
-        return value
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "--short=12", "HEAD"],
-            text=True,
-            stderr=subprocess.DEVNULL,
-            timeout=1,
-        ).strip()
-    except Exception:
-        return ""
+    """Backward-compatible accessor for the current traceable build commit."""
+    return str(get_build_info().get("git_commit_short", ""))
 
 
 def _report_markdown(record: dict[str, Any], status: dict[str, Any]) -> str:
@@ -362,7 +372,12 @@ def _report_markdown(record: dict[str, Any], status: dict[str, Any]) -> str:
         f"- Validation ID: `{record.get('validation_id', '')}`",
         f"- Operator: {record.get('operator', '')}",
         f"- Application: {record.get('application_version', '')}",
+        f"- Package version: {record.get('package_version', '')}",
         f"- Build: {record.get('build_identifier', '')}",
+        f"- Build timestamp: {record.get('build_timestamp_utc', '')}",
+        f"- Build clean: {record.get('build_dirty') is False}",
+        f"- Control compatibility: {record.get('control_compatibility_version', '')}",
+        f"- Build fingerprint: `{record.get('build_identity_fingerprint', '')}`",
         f"- Active Config: `{record.get('active_config_path', '')}`",
         f"- Config fingerprint: `{record.get('config_fingerprint', '')}`",
         "",

@@ -12,7 +12,13 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Callable
 
 from .a4 import DEFAULT_COMMANDS, format_settings_commands, list_serial_ports
-from .app_info import APP_NAME, APP_SHORT_NAME, APP_VERSION
+from .app_info import (
+    APP_NAME,
+    APP_SHORT_NAME,
+    APP_VERSION,
+    format_build_identity,
+    get_build_info,
+)
 from .assets import find_asset, load_tk_image, set_window_icon
 from .flow_control import PerfusionSetpoint, build_perfusion_setpoint
 from .operations import (
@@ -32,6 +38,7 @@ from .port_scan import merge_port_devices, scan_serial_ports
 from .protocol_runner import schedule_armed
 from .config import (
     ConfigResolution,
+    app_base_dir,
     load_config,
     load_user_settings,
     persist_active_config_dir,
@@ -42,6 +49,7 @@ from .config import (
     validate_pump_settings,
 )
 from .coordinator import OperationCoordinator, RunToken
+from .diagnostics import export_diagnostics
 from .gui_commissioning import CommissioningFrame
 from .gui_history import RunHistoryFrame
 from .gui_recipe import RecipeBuilderFrame
@@ -339,6 +347,12 @@ class A4PumpApp(tk.Tk):
         ttk.Label(parent, textvariable=self.connection_summary_var, style="Subtitle.TLabel", justify="left").grid(
             row=21, column=0, sticky="w"
         )
+        ttk.Button(
+            parent,
+            text="About / Diagnostics",
+            style="Secondary.TButton",
+            command=self.show_about_dialog,
+        ).grid(row=22, column=0, sticky="ew", pady=(14, 0))
 
     def select_page(self, page: str) -> None:
         if page not in self.pages:
@@ -1874,6 +1888,114 @@ class A4PumpApp(tk.Tk):
 
     def open_pumps_json(self) -> None:
         self._open_path(self.config_resolution.active_pumps_json)
+
+    def show_about_dialog(self) -> None:
+        existing = getattr(self, "_about_dialog", None)
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            return
+        info = get_build_info()
+        dialog = tk.Toplevel(self)
+        self._about_dialog = dialog
+        dialog.title("About / Build information")
+        dialog.transient(self)
+        dialog.geometry("680x500")
+        dialog.columnconfigure(0, weight=1)
+        dialog.rowconfigure(1, weight=1)
+        ttk.Label(
+            dialog,
+            text=f"{APP_NAME} {info.get('human_version', APP_VERSION)}",
+            style="PageTitle.TLabel",
+        ).grid(row=0, column=0, sticky="w", padx=16, pady=(16, 8))
+        validation_path = self.config_resolution.active_config_dir / "validation"
+        details = {
+            "application": info.get("application_name", ""),
+            "release_version": info.get("human_version", ""),
+            "package_version": info.get("package_version", ""),
+            "commit": info.get("git_commit", ""),
+            "build_time": info.get("build_timestamp_utc", ""),
+            "architecture": info.get("architecture", ""),
+            "python": info.get("python_version", ""),
+            "pyinstaller": info.get("pyinstaller_version", ""),
+            "dirty": info.get("git_dirty"),
+            "signing": info.get("code_signing", "unsigned"),
+            "control_compatibility": info.get("control_compatibility_version", ""),
+            "build_fingerprint": info.get("build_identity_fingerprint", ""),
+            "Active Config": str(self.config_resolution.active_config_dir),
+            "validation_storage": str(validation_path),
+        }
+        text = tk.Text(dialog, wrap="word", font=("Consolas", 9), height=18)
+        text.grid(row=1, column=0, sticky="nsew", padx=16)
+        text.insert("1.0", "\n".join(f"{key}: {value}" for key, value in details.items()))
+        text.configure(state="disabled")
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=2, column=0, sticky="ew", padx=16, pady=16)
+        for column in range(4):
+            buttons.columnconfigure(column, weight=1)
+        ttk.Button(
+            buttons,
+            text="Copy build identity",
+            command=lambda: self._copy_text(format_build_identity(info), "build identity"),
+        ).grid(row=0, column=0, sticky="ew", padx=3)
+        ttk.Button(
+            buttons,
+            text="Open diagnostics folder",
+            command=self.open_diagnostics_folder,
+        ).grid(row=0, column=1, sticky="ew", padx=3)
+        ttk.Button(
+            buttons,
+            text="Export diagnostics…",
+            command=self.export_diagnostics_gui,
+        ).grid(row=0, column=2, sticky="ew", padx=3)
+        ttk.Button(
+            buttons,
+            text="Open release notes",
+            command=self.open_release_notes,
+        ).grid(row=0, column=3, sticky="ew", padx=3)
+
+    def open_diagnostics_folder(self) -> None:
+        path = self.config_resolution.active_config_dir / "diagnostics"
+        path.mkdir(parents=True, exist_ok=True)
+        self._open_path(path)
+
+    def open_release_notes(self) -> None:
+        root = app_base_dir()
+        candidates = (
+            root / "docs" / "RELEASE_NOTES.md",
+            root.parent / "RELEASE_NOTES.md",
+            root / "RELEASE_NOTES.md",
+        )
+        path = next((item for item in candidates if item.is_file()), None)
+        if path is None:
+            messagebox.showerror("Release notes unavailable", "RELEASE_NOTES.md was not found.")
+            return
+        self._open_path(path)
+
+    def export_diagnostics_gui(self) -> None:
+        output = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export sanitized diagnostics",
+            defaultextension=".zip",
+            filetypes=[("ZIP archive", "*.zip")],
+            initialfile="A4PumpControl-diagnostics.zip",
+        )
+        if not output:
+            return
+        resolution = self.config_resolution
+        self.set_status("Exporting sanitized diagnostics…")
+
+        def worker() -> None:
+            try:
+                path = export_diagnostics(resolution, output)
+                self.post_ui(self._diagnostics_exported, path)
+            except Exception as exc:
+                self.post_ui(messagebox.showerror, "Diagnostics export failed", str(exc))
+
+        threading.Thread(target=worker, daemon=True, name="a4-diagnostics-export").start()
+
+    def _diagnostics_exported(self, path: Path) -> None:
+        self.set_status(f"Diagnostics exported: {path}")
+        messagebox.showinfo("Diagnostics exported", str(path))
 
     def _copy_text(self, value: str, label: str) -> None:
         self.clipboard_clear()

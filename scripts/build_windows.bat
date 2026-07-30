@@ -1,6 +1,12 @@
 @echo off
 setlocal
 cd /d "%~dp0\.."
+if defined A4_RELEASE_BUILD (
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\generate_build_info.ps1" -BuildType "release-candidate" -RequireClean
+) else (
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\generate_build_info.ps1" -BuildType "development"
+)
+if errorlevel 1 exit /b %ERRORLEVEL%
 set "STAGE=%CD%\build\pyinstaller-dist"
 set "WORK=%CD%\build\pyinstaller-work"
 set "KIT=%CD%\dist\A4PumpGUI"

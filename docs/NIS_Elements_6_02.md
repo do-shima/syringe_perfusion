@@ -21,6 +21,7 @@ Before production use, open Setup → Commissioning and complete the applicable 
 ```
 
 These inspection commands do not move pumps. A UART command exit code is software evidence only; actual NIS `Int_ExecProgram`, physical motion, flow, and display appearance require manual observation.
+Record `a4ctl.exe --version` and the release ZIP SHA-256 on the validation-session cover sheet before running NIS commissioning.
 9. Trigger an immediate or delayed armed wrapper.
 10. Use STOP ALL for cancellation or emergency stop.
 
@@ -115,3 +116,5 @@ Tracked `.cmd` files are ASCII/CRLF, contain no continuation `^`, use one a4ctl 
 Automated tests do not open a real serial port. Validate pump directions, water-weight flow, simultaneous liquid level, STOP behavior, delayed cancellation, actual NIS `Int_ExecProgram`, and Windows 125%/150% scaling on the microscope PC.
 
 Record the workstation checklist in Setup → Commissioning and archive the JSON/CSV/Markdown report. The report remains `SOFTWARE READY — HARDWARE VALIDATION INCOMPLETE`, `COMMISSIONING PARTIAL`, `FAILED`, or `STALE` until the corresponding physical/manual or measured evidence is entered.
+
+For support, run the read-only `diagnostics-summary` or `export-diagnostics --output "<PATH>.zip"` commands. Port enumeration does not open a serial connection, and diagnostics never invokes an NIS macro.

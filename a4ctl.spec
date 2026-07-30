@@ -1,11 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
+build_info = Path('build/generated/build_info.json')
+build_datas = [(str(build_info), '.')] if build_info.is_file() else []
 
 a = Analysis(
     ['run_cli.py'],
     pathex=[],
     binaries=[],
-    datas=[('config', 'default_config'), ('recipes', 'recipes'), ('assets', 'assets')],
+    datas=[('config', 'default_config'), ('recipes', 'recipes'), ('assets', 'assets'), *build_datas],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

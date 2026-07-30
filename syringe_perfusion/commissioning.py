@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from threading import Event
 from typing import Any, Callable, Iterable
 
+from .app_info import CONTROL_COMPATIBILITY_VERSION
 from .coordinator import OperationCoordinator
 from .flow_control import calibrated_ul_per_mm, quantize_speed, speed_for_flow
 from .perfusion_state import config_fingerprint, now_iso
@@ -60,13 +61,15 @@ def dependency_snapshot(
     config_data: dict[str, Any],
     *,
     config_dir: str,
-    application_version: str,
+    application_version: str = "",
+    control_compatibility_version: int = CONTROL_COMPATIBILITY_VERSION,
 ) -> dict[str, Any]:
     pumps = config_data.get("pumps", {})
     selected = _selected_syringes(config_data)
     return {
         "config_fingerprint": config_fingerprint(config_dir),
         "application_version": application_version,
+        "control_compatibility_version": int(control_compatibility_version),
         "pumps": {
             role: {
                 "port": cfg.get("port", ""),
@@ -126,8 +129,12 @@ def staleness_reasons(
     for key, value in current.get("syringes", {}).items():
         if old_syringes.get(key, {}).get("calibrated_ul_per_mm") != value.get("calibrated_ul_per_mm"):
             reasons.append(f"syringe calibration changed ({key})")
-    if stored.get("application_version") != current.get("application_version"):
-        reasons.append("application version changed")
+    stored_compatibility = stored.get("control_compatibility_version")
+    current_compatibility = current.get("control_compatibility_version")
+    if stored_compatibility is None:
+        reasons.append("validation predates control compatibility tracking")
+    elif stored_compatibility != current_compatibility:
+        reasons.append("validation-sensitive control compatibility changed")
     if stored.get("config_fingerprint") != current.get("config_fingerprint") and not reasons:
         reasons.append("relevant config fingerprint changed")
     return _unique(reasons)

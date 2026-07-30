@@ -10,6 +10,7 @@ __pycache__/
 # -----------------------------
 build/
 dist/
+release/*
 *.egg-info/
 *.egg
 .eggs/

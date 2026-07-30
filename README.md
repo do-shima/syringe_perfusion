@@ -1,6 +1,6 @@
 # A4 Syringe Pump Control
 
-Version: V3.2  
+Release candidate: 0.2.0-beta.1 (`0.2.0b1` package metadata)
 GUI: Tkinter/ttk + clam theme + custom Style  
 Control: USB-TTL UART  
 Distribution: PyInstaller one-folder  
@@ -261,6 +261,14 @@ PyInstaller one-folder build:
 scripts\build_windows.bat
 ```
 
+Traceable hardware-validation release build (clean Windows checkout only):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_release_windows.ps1
+```
+
+The release build runs all tests, embeds build provenance, performs non-hardware packaged smoke tests, creates a versioned ZIP and SHA-256 files, and revalidates every manifest entry. Executables are unsigned. See [Release Build and Upgrade](docs/BUILD_RELEASE.md).
+
 Generated kit:
 
 ```text
@@ -286,7 +294,7 @@ PowerShell:
 
 ```powershell
 python -m pip install -r requirements.txt
-python -m pytest
+python -m pytest -q
 python run_gui.py
 ```
 
@@ -308,6 +316,7 @@ dist\A4PumpGUI\A4PumpGUI.exe
 CLI:
 
 ```powershell
+dist\A4PumpGUI\a4ctl\a4ctl.exe --version
 dist\A4PumpGUI\a4ctl\a4ctl.exe config-path
 dist\A4PumpGUI\a4ctl\a4ctl.exe list-ports
 ```
@@ -474,7 +483,7 @@ Commissioning data is optional and created only when used:
 
 This directory is local evidence, not a fifth required config file, not copied from packaged defaults, and ignored in the source tree. Current state is written atomically; prior records and append-only events are retained.
 
-Evidence is explicitly labelled `SOFTWARE CHECK`, `UART COMMAND COMPLETED`, `MANUAL PHYSICAL CONFIRMATION`, or `MEASURED RESULT`. A serial command alone cannot produce physical PASS. Port/HWID, serial settings, syringe selection/calibration, role direction, relevant config fingerprint, and application version changes can mark dependent evidence `STALE`.
+Evidence is explicitly labelled `SOFTWARE CHECK`, `UART COMMAND COMPLETED`, `MANUAL PHYSICAL CONFIRMATION`, or `MEASURED RESULT`. A serial command alone cannot produce physical PASS. Port/HWID, serial settings, syringe selection/calibration, role direction, relevant config fingerprint, and validation-sensitive control compatibility changes can mark dependent evidence `STALE`. Documentation-only builds do not invalidate physical calibration merely because the commit changed.
 
 Preflight findings are `BLOCK`, `WARN`, `INFO`, or `PASS`. Invalid ports/state/fingerprint and failed physical direction/STOP checks block production readiness. Missing flow, reverse-flow, balance, or workstation evidence warns. The local preference **Require current commissioning for LIVE armed start** makes current basic commissioning mandatory. Under the default compatibility policy, a LIVE Experiment START with missing/stale commissioning requires a named, reasoned, per-session acknowledgement; this never bypasses software blocks.
 
@@ -482,7 +491,7 @@ Applying a candidate `calibrated_ul_per_mm` is explicit. The UI shows old/candid
 
 ## Recipe Builder
 
-V3.2 Recipe Builder has three main areas:
+The Recipe Builder, introduced in the legacy V3.2 generation, has three main areas:
 
 - Block Library
 - Recipe Steps
@@ -517,7 +526,7 @@ Do not treat these as one combined log. Log unification is future work and is pl
 
 ## Application Icon and Assets
 
-V3.2 includes application icon and logo asset loading.
+Application icon and logo asset loading originated in the legacy V3.2 generation.
 
 ```text
 assets/
@@ -570,21 +579,40 @@ Main entry points:
 
 ## Development Status
 
-- Version: V3.2
+- Release candidate: 0.2.0-beta.1
+- Canonical package version: `pyproject.toml` value `0.2.0b1`
+- Future tag name: `v0.2.0-beta.1` (not created by build scripts)
 - Tests: run `python -m pytest -q` to verify the current checkout
 - GUI/CLI one-folder build and NIS wrapper DRY-RUN confirmed
 - Live pump control and actual NIS `Int_ExecProgram` behavior require hardware validation
 - Commissioning software records do not claim physical pump, flow, STOP, NIS, or microscope validation
 - Tested command behavior: lowercase ASCII with CRLF over 9600 baud USB-TTL UART
 - Log unification pending
-- Version metadata remains split between display version `V3.2` and package version `0.1.0`; no new version policy was invented in this milestone
+- Executables are unsigned; verify the published SHA-256 before installation
+- Hardware-in-the-loop commissioning remains required before microscope experiments
+
+## Build identity and diagnostics
+
+`pyproject.toml` is the single package-version source. GUI, CLI, commissioning records, reports, build metadata, and artifacts derive the human form `0.2.0-beta.1` from PEP 440 `0.2.0b1`. Frozen builds read `_internal\build_info.json` and never invoke Git at startup. Build metadata is informational and never bypasses preflight or safety checks.
+
+Read-only diagnostics:
+
+```powershell
+a4ctl.exe --version
+a4ctl.exe --config-dir "<CFG>" diagnostics-summary
+a4ctl.exe --config-dir "<CFG>" export-diagnostics --output "A4-diagnostics.zip"
+```
+
+The diagnostic ZIP includes sanitized build/config/preflight/runtime/validation summaries, non-opening port enumeration, wrapper checks, recent logs, and relevant config. It does not move pumps or open serial ports. Review it before sharing because COM/HWID and experiment identifiers are intentionally retained for troubleshooting.
 
 ## Version History
 
+- 0.2.0-beta.1: traceable hardware-validation release candidate; commissioning, preflight, dashboard, diagnostics, and reproducible Windows packaging.
+- V3.2 and earlier entries below are historical legacy UI generations, not the current semantic package version.
 - V1: serial command wrapper, config, CLI/GUI, logging.
 - V2: Recipe Builder.
 - V2.1: single-pump mode and settings writer.
 - V3.0: left navigation and card UI.
 - V3.1: UI polish.
 - V3.2: icon/assets and NIS-ready Windows app.
-- V3.3 or future: log unification.
+- Future: log unification.
