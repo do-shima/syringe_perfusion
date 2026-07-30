@@ -45,6 +45,9 @@ def schedule_armed(
     if delay_s < 0:
         raise ValueError("delay_s must be zero or positive")
     resolution, state, _data, _ports = validate_armed_plan(config, scanner=scanner)
+    from .validation_store import ValidationStore
+
+    validation_at_schedule = ValidationStore(resolution).status(data=_data)["status"]
     root = resolution.active_config_dir
     coordinator = OperationCoordinator(resolution)
     token, pending = coordinator.reserve_pending(
@@ -53,6 +56,7 @@ def schedule_armed(
             "dish_id": dish_id,
             "condition": condition,
             "trigger_source": trigger_source,
+            "validation_status_at_start": validation_at_schedule,
         },
     )
     command = build_worker_command(root, token.run_id)

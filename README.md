@@ -12,6 +12,8 @@ A4/QHZS系シリンジポンプをUSB-TTL UART経由で制御する軽量Python/
 
 研究室内の顕微鏡PCや実験用Windows PCで、追加GUI依存を増やさずに動かすことを前提にしています。
 
+Setup内の **Commissioning** workspaceは、port identity、物理方向、Emergency STOP、delayed cancellation、直接体積/重量法flow測定、IN/OUT balance、NIS workstation確認をActive Config配下へ記録します。UART write成功は物理PASSではありません。詳細は [Hardware Commissioning Guide](docs/HARDWARE_COMMISSIONING.md) を参照してください。
+
 ## Active Config（GUI / CLI / NIS共通）
 
 GUI、CLI、NIS wrapperは、必ず1つのActive Config Directoryにある次の4ファイルを一組として読みます。
@@ -110,6 +112,9 @@ a4ctl.exe --config-dir "<CFG>" start-armed --dish-id NIS --condition perfusion -
 a4ctl.exe --config-dir "<CFG>" schedule-armed --delay-s 300 --dish-id NIS --condition perfusion_delayed --trigger-source NIS
 a4ctl.exe --config-dir "<CFG>" cancel-pending
 a4ctl.exe --config-dir "<CFG>" stop-all
+a4ctl.exe --config-dir "<CFG>" preflight
+a4ctl.exe --config-dir "<CFG>" validation-status
+a4ctl.exe --config-dir "<CFG>" recent-runs --limit 20
 ```
 
 `start-armed` is always immediate: it sends only the persisted IN-forward and OUT-reverse start commands and does not recalculate or rewrite settings. `schedule-armed --delay-s N` launches a detached worker and returns a run ID promptly. The GUI **GUI START delay sec** field uses this same scheduler when greater than zero; it does not change CLI `start-armed`.
@@ -117,6 +122,20 @@ a4ctl.exe --config-dir "<CFG>" stop-all
 Scheduled, IN-to-OUT, recipe, and jog waits use the shared persisted cancellation token. START authorization is rechecked at the UART write boundary. Once STOP is accepted by the command gate for a run, no later START command for that run is authorized. STOP uses persisted active/pending/armed target snapshots before editable `pumps.json`, attempts every unique target independently, and reports `STOP_FAILED` if any STOP fails.
 
 `COMPLETED_ESTIMATED` is persisted only when the programmed duration has elapsed for the same still-`STARTED` run. It is an elapsed-time estimate and is not pump readback.
+
+Commissioning inspection/report commands never move a pump:
+
+```text
+a4ctl.exe --config-dir "<CFG>" preflight --json
+a4ctl.exe --config-dir "<CFG>" preflight --require-commissioned
+a4ctl.exe --config-dir "<CFG>" validation-status --json
+a4ctl.exe --config-dir "<CFG>" export-validation --format markdown --output "commissioning.md"
+a4ctl.exe --config-dir "<CFG>" export-validation --format json --output "commissioning.json"
+a4ctl.exe --config-dir "<CFG>" export-validation --format csv --output "commissioning.csv"
+a4ctl.exe --config-dir "<CFG>" recent-runs --limit 20 --json
+```
+
+`preflight` returns `0` when no software `BLOCK` exists and `2` when a `BLOCK` exists. `--require-commissioned` also blocks when required physical commissioning is missing or stale. Software blocks cannot be overridden.
 
 No speed is changed while RUNNING/STARTED. This milestone intentionally has no live-flow adjustment.
 
@@ -141,8 +160,8 @@ No speed is changed while RUNNING/STARTED. This milestone intentionally has no l
 - `a4ctl.exe` called from `.cmd` files
 - `A4PumpGUI.exe` confirmed working
 - `.cmd` wrappers confirmed from PowerShell and NIS macro
-- A4 pump control confirmed from PowerShell and NIS macro
-- PowerShell and NIS macro execution confirmed
+- A4 pump UART behavior requires controlled physical commissioning on the target workstation
+- Actual NIS macro execution requires manual validation on the microscope PC
 - The actual COM port and installation directory depend on the microscope PC.
 - Set the shared Active Config through GUI Setup; tracked `.cmd` wrappers do not contain COM settings.
 
@@ -429,13 +448,37 @@ Pump enable state is stored in `config/pumps.json` and can also be changed from 
 
 ## GUI layout
 
-- **Experiment**: port scan、flow setpoint、量子化preview、PROGRAM / ARM BOTH、START ARMED、STOP ALL、共有runtime state。
-- **Setup**: Active Configの完全パスとsource、CLI共有状態、NIS CFG、COM/baudrate/terminator/timeout、安全保存・Reload、接続テスト、Manual/Jog。
-- **Advanced**: Profiles、Calculator、Recipes。低頻度項目はスクロール可能です。
+- **Experiment**: port scan、flow setpoint、量子化preview、PROGRAM / ARM BOTH、START ARMED、STOP ALL、共有runtime state、plan/run ID、port detection、timing estimate、commissioning/preflight/fault summary。
+- **Setup / Hardware setup**: Active Config、NIS CFG、COM/baudrate/terminator/timeout、安全保存・Reload、接続テスト、Manual/Jog。
+- **Setup / Commissioning**: identity、bounded direction/STOP、cancellation rehearsal、flow measurement、calibration review、balance、workstation checklist、report。
+- **Advanced**: Profiles、Calculator、Recipes、derived recent-run history/export。低頻度項目はスクロール可能です。
 
 STOP ALLは全画面共通の固定領域にあり、Escも維持します。900 x 600でもExperimentの主要操作が見えるよう、起動時画面をExperimentにしています。
 
 GUIの `GUI START delay sec` が0ならSTART ARMEDは即時実行、0より大きければCLI `schedule-armed` と同じdetached schedulerを使用してPENDINGになります。GUIは待機中もブロックせず、run ID、予定時刻、概算残り時間を表示します。CLI `start-armed` は常に即時です。
+
+Experiment Dashboardのcountdownはpersisted timestampから計算する情報表示で、UARTを送信しません。OS sleepやwall-clock変更後はpersisted stateを再読込し、hardware actionを推測しません。
+
+## Commissioning, validation storage, and production preflight
+
+Commissioning data is optional and created only when used:
+
+```text
+<ACTIVE_CONFIG>\validation\
+  commissioning_state.json
+  measurements.csv
+  validation_events.jsonl
+  history\
+  reports\
+```
+
+This directory is local evidence, not a fifth required config file, not copied from packaged defaults, and ignored in the source tree. Current state is written atomically; prior records and append-only events are retained.
+
+Evidence is explicitly labelled `SOFTWARE CHECK`, `UART COMMAND COMPLETED`, `MANUAL PHYSICAL CONFIRMATION`, or `MEASURED RESULT`. A serial command alone cannot produce physical PASS. Port/HWID, serial settings, syringe selection/calibration, role direction, relevant config fingerprint, and application version changes can mark dependent evidence `STALE`.
+
+Preflight findings are `BLOCK`, `WARN`, `INFO`, or `PASS`. Invalid ports/state/fingerprint and failed physical direction/STOP checks block production readiness. Missing flow, reverse-flow, balance, or workstation evidence warns. The local preference **Require current commissioning for LIVE armed start** makes current basic commissioning mandatory. Under the default compatibility policy, a LIVE Experiment START with missing/stale commissioning requires a named, reasoned, per-session acknowledgement; this never bypasses software blocks.
+
+Applying a candidate `calibrated_ul_per_mm` is explicit. The UI shows old/candidate values and replicate statistics, backs up and atomically updates `syringes.json`, preserves unknown keys, records provenance, and invalidates ARMED/PENDING under the shared transition lock. OUT reverse performance remains direction-specific evidence and is not automatically applied as a general syringe correction.
 
 ## Recipe Builder
 
@@ -531,8 +574,10 @@ Main entry points:
 - Tests: run `python -m pytest -q` to verify the current checkout
 - GUI/CLI one-folder build and NIS wrapper DRY-RUN confirmed
 - Live pump control and actual NIS `Int_ExecProgram` behavior require hardware validation
+- Commissioning software records do not claim physical pump, flow, STOP, NIS, or microscope validation
 - Tested command behavior: lowercase ASCII with CRLF over 9600 baud USB-TTL UART
 - Log unification pending
+- Version metadata remains split between display version `V3.2` and package version `0.1.0`; no new version policy was invented in this milestone
 
 ## Version History
 

@@ -12,6 +12,15 @@ NIS starts a plan that the GUI has already calculated, programmed, and atomicall
 6. Select **PROGRAM / ARM BOTH**.
 7. Confirm **PROGRAMMED — NOT READ BACK**.
 8. Start NIS acquisition.
+
+Before production use, open Setup → Commissioning and complete the applicable adapter identity, direction, STOP, cancellation, flow, balance, and workstation checks. Run:
+
+```text
+<A4PUMP_ROOT>\a4ctl\a4ctl.exe --config-dir "<A4PUMP_ROOT>\config" preflight
+<A4PUMP_ROOT>\a4ctl\a4ctl.exe --config-dir "<A4PUMP_ROOT>\config" validation-status
+```
+
+These inspection commands do not move pumps. A UART command exit code is software evidence only; actual NIS `Int_ExecProgram`, physical motion, flow, and display appearance require manual observation.
 9. Trigger an immediate or delayed armed wrapper.
 10. Use STOP ALL for cancellation or emergency stop.
 
@@ -104,3 +113,5 @@ Tracked `.cmd` files are ASCII/CRLF, contain no continuation `^`, use one a4ctl 
 ## Hardware checks still required
 
 Automated tests do not open a real serial port. Validate pump directions, water-weight flow, simultaneous liquid level, STOP behavior, delayed cancellation, actual NIS `Int_ExecProgram`, and Windows 125%/150% scaling on the microscope PC.
+
+Record the workstation checklist in Setup → Commissioning and archive the JSON/CSV/Markdown report. The report remains `SOFTWARE READY — HARDWARE VALIDATION INCOMPLETE`, `COMMISSIONING PARTIAL`, `FAILED`, or `STALE` until the corresponding physical/manual or measured evidence is entered.

@@ -8,7 +8,7 @@ import threading
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any, Callable
 
 from .a4 import DEFAULT_COMMANDS, format_settings_commands, list_serial_ports
@@ -42,9 +42,13 @@ from .config import (
     validate_pump_settings,
 )
 from .coordinator import OperationCoordinator, RunToken
+from .gui_commissioning import CommissioningFrame
+from .gui_history import RunHistoryFrame
 from .gui_recipe import RecipeBuilderFrame
+from .preflight import assess_preflight
 from .profiles import calculate, calculate_profile, result_to_dict, ul_per_mm_from_inner_diameter
 from .ui_theme import ScrollableFrame, apply_theme, create_card, status_badge
+from .validation_store import ValidationStore
 
 
 TRIGGER_SOURCES = ["Manual", "Foot pedal comparable", "NIS", "TTL"]
@@ -133,6 +137,11 @@ class A4PumpApp(tk.Tk):
         self.flow_slider_min = float(ui.get("flow_slider_min", 0.1))
         self.flow_slider_max = float(ui.get("flow_slider_max", 3.0))
         self.flow_slider_step = float(ui.get("flow_slider_step", 0.1))
+        self.require_current_commissioning_var = tk.BooleanVar(
+            value=bool(ui.get("require_current_commissioning", False))
+        )
+        self._commissioning_acknowledged = False
+        self.validation_store = ValidationStore(self.config_resolution)
         self.perfusion_mode_var = tk.StringVar(value="fixed_volume")
         self.in_flow_var = tk.StringVar(value="2.0")
         self.flow_slider_var = tk.DoubleVar(value=2.0)
@@ -500,6 +509,22 @@ class A4PumpApp(tk.Tk):
         ttk.Label(shared, textvariable=self.runtime_detail_var, style="Subtitle.TLabel").grid(
             row=5, column=0, columnspan=3, sticky="ew", pady=(2, 0)
         )
+        self.dashboard_identity_var = tk.StringVar(value="")
+        self.dashboard_plan_var = tk.StringVar(value="")
+        self.dashboard_safety_var = tk.StringVar(value="")
+        self.dashboard_timing_var = tk.StringVar(value="")
+        ttk.Label(shared, textvariable=self.dashboard_identity_var, style="Card.TLabel").grid(
+            row=6, column=0, columnspan=3, sticky="ew", pady=(2, 0)
+        )
+        ttk.Label(shared, textvariable=self.dashboard_plan_var, style="Card.TLabel").grid(
+            row=7, column=0, columnspan=3, sticky="ew", pady=(2, 0)
+        )
+        ttk.Label(shared, textvariable=self.dashboard_timing_var, style="Subtitle.TLabel").grid(
+            row=8, column=0, columnspan=3, sticky="ew", pady=(2, 0)
+        )
+        ttk.Label(shared, textvariable=self.dashboard_safety_var, style="Value.TLabel").grid(
+            row=9, column=0, columnspan=3, sticky="ew", pady=(2, 0)
+        )
 
         actions = create_card(parent, "Primary actions", "Setpoint edits only update preview; they never send UART commands.")
         actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
@@ -654,7 +679,17 @@ class A4PumpApp(tk.Tk):
     def _build_setup_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
-        self.setup_scroll = ScrollableFrame(parent, height=460)
+        self.setup_notebook = ttk.Notebook(parent)
+        self.setup_notebook.grid(row=0, column=0, sticky="nsew")
+        hardware_page = ttk.Frame(self.setup_notebook)
+        commissioning_page = ttk.Frame(self.setup_notebook)
+        self.setup_notebook.add(hardware_page, text="Hardware setup")
+        self.setup_notebook.add(commissioning_page, text="Commissioning")
+        hardware_page.columnconfigure(0, weight=1)
+        hardware_page.rowconfigure(0, weight=1)
+        commissioning_page.columnconfigure(0, weight=1)
+        commissioning_page.rowconfigure(0, weight=1)
+        self.setup_scroll = ScrollableFrame(hardware_page, height=460)
         self.setup_scroll.grid(row=0, column=0, sticky="nsew")
         inner = self.setup_scroll.inner
         inner.columnconfigure(0, weight=1)
@@ -667,6 +702,31 @@ class A4PumpApp(tk.Tk):
         pump_frame.grid(row=1, column=0, sticky="ew")
         self._build_pump_tab(pump_frame)
 
+        self.commissioning_page = commissioning_page
+        self.commissioning_placeholder = ttk.Label(
+            commissioning_page,
+            text="Select this tab to load the commissioning workspace.",
+            style="Subtitle.TLabel",
+        )
+        self.commissioning_placeholder.grid(row=0, column=0, sticky="nw", padx=12, pady=12)
+        self.setup_notebook.bind("<<NotebookTabChanged>>", self._on_setup_tab_changed, add="+")
+
+    def _on_setup_tab_changed(self, _event: tk.Event[Any] | None = None) -> None:
+        if self.setup_notebook.index(self.setup_notebook.select()) == 1:
+            self.ensure_commissioning_workspace()
+
+    def ensure_commissioning_workspace(self) -> CommissioningFrame:
+        existing = getattr(self, "commissioning_tab", None)
+        if existing is not None:
+            return existing
+        self.commissioning_placeholder.destroy()
+        commissioning_scroll = ScrollableFrame(self.commissioning_page, height=460)
+        commissioning_scroll.grid(row=0, column=0, sticky="nsew")
+        commissioning_scroll.inner.columnconfigure(0, weight=1)
+        self.commissioning_tab = CommissioningFrame(commissioning_scroll.inner, self)
+        self.commissioning_tab.grid(row=0, column=0, sticky="ew")
+        return self.commissioning_tab
+
     def _build_advanced_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
@@ -676,9 +736,11 @@ class A4PumpApp(tk.Tk):
         profile_scroll = ScrollableFrame(self.advanced_notebook, height=430)
         calc_scroll = ScrollableFrame(self.advanced_notebook, height=430)
         self.recipe_tab = RecipeBuilderFrame(self.advanced_notebook, self)
+        self.history_tab = RunHistoryFrame(self.advanced_notebook, self)
         self.advanced_notebook.add(profile_scroll, text="Profiles")
         self.advanced_notebook.add(calc_scroll, text="Calculator")
         self.advanced_notebook.add(self.recipe_tab, text="Recipes")
+        self.advanced_notebook.add(self.history_tab, text="Run history")
         self._build_profile_tab(profile_scroll.inner)
         self._build_calc_tab(calc_scroll.inner)
 
@@ -1300,6 +1362,20 @@ class A4PumpApp(tk.Tk):
                 timeout=self.timeout_var.get(),
             )
             self.data = load_config(self.config_resolution)
+            preflight = assess_preflight(
+                self.config_resolution,
+                detected_ports=json.loads(json.dumps(self.detected_ports)),
+                dry_run=self.dry_run_var.get(),
+            )
+            blocking = [
+                item for item in preflight["findings"]
+                if item["level"] == "BLOCK" and item["code"] != "INVALID_ARMED_PLAN"
+            ]
+            if blocking:
+                raise ValueError(
+                    "Software preflight BLOCK:\n"
+                    + "\n".join(f"{item['code']}: {item['message']}" for item in blocking)
+                )
             setpoint = self.build_current_perfusion_setpoint()
             context = {
                 "dry_run": self.dry_run_var.get(),
@@ -1338,6 +1414,8 @@ class A4PumpApp(tk.Tk):
             return
         if get_arm_status(self.config_resolution).get("state") != "ARMED":
             messagebox.showerror("START refused", "The shared perfusion state is not ARMED.")
+            return
+        if not self._confirm_live_start_preflight():
             return
         context = {
             "dish_id": self.dish_id_var.get(),
@@ -1418,11 +1496,148 @@ class A4PumpApp(tk.Tk):
                 self.runtime_detail_var.set(
                     f"Run {status.get('run_id', '')}" if status.get("run_id") else ""
                 )
+            self.update_experiment_dashboard(status)
         except Exception as exc:
             self.set_status(f"Runtime state poll failed: {exc}")
         finally:
             if self.winfo_exists():
                 self._state_poll_after_id = self.after(400, self.poll_runtime_state)
+
+    def update_experiment_dashboard(self, status: dict[str, Any]) -> None:
+        plan = status.get("plan") if isinstance(status.get("plan"), dict) else {}
+        pumps = plan.get("pumps") if isinstance(plan.get("pumps"), dict) else {}
+        detected = {str(item.get("device", "")).casefold() for item in self.detected_ports}
+        in_port = self.port_vars["IN"].get()
+        out_port = self.port_vars["OUT"].get()
+        in_detected = "detected" if in_port.casefold() in detected else "not detected"
+        out_detected = (
+            "disabled"
+            if not self.out_enabled_var.get()
+            else "detected" if out_port.casefold() in detected else "not detected"
+        )
+        self.dashboard_identity_var.set(
+            f"IN {in_port or '(missing)'} ({in_detected}) · "
+            f"OUT {out_port or '(missing)'} ({out_detected})"
+        )
+        in_plan = pumps.get("IN", {})
+        out_plan = pumps.get("OUT", {})
+        ratio = ""
+        try:
+            in_flow = float(in_plan.get("requested_flow_ml_min"))
+            out_flow = float(out_plan.get("requested_flow_ml_min"))
+            ratio = f"{out_flow / in_flow:.3f}"
+        except (TypeError, ValueError, ZeroDivisionError):
+            in_flow = self.in_flow_var.get()
+            out_flow = self.independent_out_flow_var.get()
+        self.dashboard_plan_var.set(
+            f"Plan {status.get('plan_id', '') or '—'} · Run {status.get('run_id', '') or '—'} · "
+            f"IN {in_flow} mL/min · OUT {out_flow} mL/min · ratio {ratio or self.out_ratio_var.get()} · "
+            f"duration {plan.get('programmed_duration_s', '—')} s · "
+            f"expected IN {in_plan.get('expected_volume_ml', '—')} mL · "
+            f"OUT {out_plan.get('expected_volume_ml', '—')} mL"
+        )
+        now_epoch = datetime.now().astimezone().timestamp()
+        pending = status.get("pending") if isinstance(status.get("pending"), dict) else {}
+        scheduled = pending.get("scheduled_for", "")
+        expected_end = status.get("expected_end", "")
+        remaining = ""
+        if status.get("expected_end_epoch") is not None:
+            remaining = f" · estimated remaining {max(0, int(float(status['expected_end_epoch']) - now_epoch))} s"
+        self.dashboard_timing_var.set(
+            f"Scheduled {scheduled or '—'} · software start {status.get('actual_started_at', '—')} · "
+            f"IN→OUT delay {(plan.get('requested') or {}).get('in_to_out_delay_s', '—')} s · "
+            f"expected end {expected_end or '—'}{remaining}"
+        )
+        validation = self.validation_store.status(
+            data=self.data,
+            detected_ports=self.detected_ports,
+        )
+        fault = status.get("fault") or {}
+        preflight = assess_preflight(
+            self.config_resolution,
+            detected_ports=self.detected_ports,
+            dry_run=self.dry_run_var.get(),
+        )
+        self.dashboard_safety_var.set(
+            f"Commissioning: {validation['status']} "
+            f"(last {validation['last_completed_at'] or 'not completed'}) · "
+            f"Preflight: {preflight['summary']} "
+            f"({preflight['counts']['BLOCK']} BLOCK, {preflight['counts']['WARN']} WARN) · "
+            f"Last fault: {fault.get('error', 'none')} · STOP: "
+            f"{'in progress' if self._stop_in_flight else status.get('state', 'ready')}"
+        )
+
+    def save_commissioning_policy(self) -> None:
+        try:
+            persist_ui_preferences(
+                {"require_current_commissioning": self.require_current_commissioning_var.get()}
+            )
+            self._commissioning_acknowledged = False
+            self.set_status("Commissioning production policy saved locally")
+        except Exception as exc:
+            messagebox.showerror("Policy save failed", str(exc))
+
+    def _confirm_live_start_preflight(self) -> bool:
+        result = assess_preflight(
+            self.config_resolution,
+            require_commissioned=self.require_current_commissioning_var.get(),
+            detected_ports=json.loads(json.dumps(self.detected_ports)),
+            dry_run=False,
+        )
+        # The shared start/scheduler validator remains authoritative for the
+        # armed-plan fingerprint and complete plan schema. This compatibility
+        # path lets it report older/incomplete state documents without
+        # weakening command emission.
+        if any(item["code"] == "INVALID_ARMED_PLAN" for item in result["findings"]):
+            return True
+        blocks = [
+            item for item in result["findings"]
+            if item["level"] == "BLOCK" and item["code"] != "INVALID_ARMED_PLAN"
+        ]
+        if blocks:
+            messagebox.showerror(
+                "START refused — preflight BLOCK",
+                "\n".join(f"{item['code']}: {item['message']}" for item in blocks),
+            )
+            return False
+        commissioning_warnings = [
+            item for item in result["findings"]
+            if item["code"] in {"COMMISSIONING_INCOMPLETE", "COMMISSIONING_STALE"}
+        ]
+        if commissioning_warnings and not self._commissioning_acknowledged:
+            if not messagebox.askyesno(
+                "Physical commissioning incomplete",
+                "Software preflight has no BLOCK findings, but physical commissioning is missing or stale.\n\n"
+                "This is not hardware validation. A per-session acknowledgement and reason are required.",
+            ):
+                return False
+            reason = simpledialog.askstring(
+                "Acknowledgement reason",
+                "Enter the reason for proceeding in this session:",
+                parent=self,
+            )
+            if not reason or not reason.strip():
+                messagebox.showerror("START refused", "A non-empty acknowledgement reason is required.")
+                return False
+            operator_var = getattr(getattr(self, "commissioning_tab", None), "operator_var", None)
+            operator = (
+                operator_var.get().strip() if operator_var is not None else ""
+            ) or os.environ.get("USERNAME", "") or "unknown"
+            acknowledgement = {
+                "event": "live_start_commissioning_acknowledgement",
+                "operator": operator,
+                "reason": reason.strip(),
+                "session_only": True,
+                "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+            }
+            record = self.validation_store.load() or self.validation_store.create(
+                operator=operator,
+                detected_ports=json.loads(json.dumps(self.detected_ports)),
+            )
+            record.setdefault("manual_confirmations", []).append(acknowledgement)
+            self.validation_store.save(record, event="live_start_commissioning_acknowledgement")
+            self._commissioning_acknowledged = True
+        return True
 
     def set_operational_state(self, state: str) -> None:
         self.perfusion_state_var.set(state)
@@ -1436,7 +1651,10 @@ class A4PumpApp(tk.Tk):
 
     def update_runtime_controls(self, state: str) -> None:
         locked = (
-            state in {"PROGRAMMING", "PENDING", "STARTING", "STARTED", "RUNNING", "RECIPE_RUNNING", "STOPPING"}
+            state in {
+                "PROGRAMMING", "PENDING", "STARTING", "STARTED", "RUNNING",
+                "RECIPE_RUNNING", "REHEARSAL_PENDING", "STOPPING",
+            }
             or self._active_operation is not None
         )
         for widget in getattr(self, "setpoint_widgets", []):
@@ -1536,6 +1754,9 @@ class A4PumpApp(tk.Tk):
                 raise FileNotFoundError(f"Missing files: {', '.join(resolution.missing_files)}")
             data = load_config(resolution)
             self.config_resolution = resolution
+            self.validation_store = ValidationStore(resolution)
+            if hasattr(self, "commissioning_tab"):
+                self.commissioning_tab.store = ValidationStore(resolution)
             self.data = data
             self.ensure_gui_pump_defaults()
             self._loading_settings = True
@@ -1562,6 +1783,8 @@ class A4PumpApp(tk.Tk):
             self.out_port_combo.configure(values=values)
             self.refresh_ports()
             self.refresh_config_display()
+            if hasattr(self, "commissioning_tab"):
+                self.commissioning_tab.refresh()
             if (
                 old_state
                 and old_state.get("state") in {"ARMED", "PENDING", "STARTING", "DRY_RUN_PREVIEW"}
@@ -2068,6 +2291,9 @@ class A4PumpApp(tk.Tk):
         recipe_tab = getattr(self, "recipe_tab", None)
         if recipe_tab is not None and hasattr(recipe_tab, "cancel_execution"):
             recipe_tab.cancel_execution()
+        commissioning_tab = getattr(self, "commissioning_tab", None)
+        if commissioning_tab is not None and hasattr(commissioning_tab, "cancel_execution"):
+            commissioning_tab.cancel_execution()
         if self._state_poll_after_id is not None:
             try:
                 self.after_cancel(self._state_poll_after_id)
@@ -2080,6 +2306,7 @@ class A4PumpApp(tk.Tk):
                     "flow_slider_min": self.flow_slider_min,
                     "flow_slider_max": self.flow_slider_max,
                     "flow_slider_step": self.flow_slider_step,
+                    "require_current_commissioning": self.require_current_commissioning_var.get(),
                 }
             )
         except Exception as exc:
@@ -2513,6 +2740,9 @@ class A4PumpApp(tk.Tk):
         recipe_tab = getattr(self, "recipe_tab", None)
         if recipe_tab is not None and hasattr(recipe_tab, "cancel_execution"):
             recipe_tab.cancel_execution()
+        commissioning_tab = getattr(self, "commissioning_tab", None)
+        if commissioning_tab is not None and hasattr(commissioning_tab, "cancel_execution"):
+            commissioning_tab.cancel_execution()
         if self._stop_in_flight:
             self.set_status("STOPPING — cancellation request already queued")
             return
@@ -2540,10 +2770,10 @@ class A4PumpApp(tk.Tk):
 
     def _stop_all_worker(self, context: dict[str, Any] | None = None) -> None:
         common = context or {
-            "dry_run": self.dry_run_var.get(),
-            "dish_id": self.dish_id_var.get(),
-            "condition": self.condition_var.get(),
-            "trigger_source": self.trigger_var.get(),
+            "dry_run": False,
+            "dish_id": "",
+            "condition": "",
+            "trigger_source": "GUI",
         }
         try:
             results = stop_all_safe(self.config_resolution, **common)

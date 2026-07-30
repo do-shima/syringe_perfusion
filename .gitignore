@@ -69,6 +69,7 @@ config/*.local.json
 config/local*.json
 config/current_session.json
 config/runtime/
+config/validation/
 local_config/
 recipes/*.local.json
 nis_cmd/local/

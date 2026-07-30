@@ -26,7 +26,15 @@ from .perfusion_state import (
 )
 
 
-ACTIVE_STATES = {"PROGRAMMING", "PENDING", "STARTING", "STARTED", "RECIPE_RUNNING", "STOPPING"}
+ACTIVE_STATES = {
+    "PROGRAMMING",
+    "PENDING",
+    "STARTING",
+    "STARTED",
+    "RECIPE_RUNNING",
+    "REHEARSAL_PENDING",
+    "STOPPING",
+}
 STARTABLE_ARMED_STATE = "ARMED"
 TERMINAL_STATES = {
     "STOPPED",
@@ -426,6 +434,130 @@ class OperationCoordinator:
             self._update_registry(document)
         self._log_transition(current, document)
         return self._token(document)
+
+    def begin_rehearsal(
+        self,
+        data: dict[str, Any],
+        *,
+        delay_s: float,
+    ) -> RunToken:
+        if delay_s < 0 or delay_s > 600:
+            raise ValueError("rehearsal delay must be bounded to 0–600 seconds")
+        run_id = str(uuid.uuid4())
+        operation_id = str(uuid.uuid4())
+        targets = targets_from_config(data, run_id=run_id)
+        scheduled_epoch = datetime.now(timezone.utc).timestamp() + float(delay_s)
+        with self.transition_lock("commissioning_rehearsal", run_id):
+            current = read_state(self.root)
+            if current and current.get("state") in ACTIVE_STATES:
+                raise RuntimeError(f"cannot run rehearsal while state={current.get('state')}")
+            document = transition_document(
+                current,
+                new_state="REHEARSAL_PENDING",
+                operation_id=operation_id,
+                run_id=run_id,
+                operation_type="commissioning_rehearsal",
+                active_targets=targets,
+                last_known_targets=targets,
+                cancellation_generation=cancellation_generation(current),
+                stop_requested=False,
+                scheduled_for_epoch=scheduled_epoch,
+                scheduled_for=datetime.fromtimestamp(
+                    scheduled_epoch, timezone.utc
+                ).astimezone().isoformat(timespec="seconds"),
+                rehearsal=True,
+                start_authorization_permitted=False,
+                owner=owner_metadata("commissioning_rehearsal", run_id),
+            )
+            write_state(self.root, document)
+            self._update_registry(document)
+        self._log_transition(current, document)
+        return self._token(document)
+
+    def invalidate_plan(self, reason: str) -> dict[str, Any] | None:
+        with self.transition_lock("invalidate_plan"):
+            current = read_state(self.root)
+            if current is None:
+                return None
+            if current.get("state") in {
+                "PROGRAMMING", "STARTING", "STARTED", "RECIPE_RUNNING",
+                "REHEARSAL_PENDING", "STOPPING",
+            }:
+                raise RuntimeError(
+                    f"cannot change calibration while state={current.get('state')}"
+                )
+            if current.get("state") in {"ARMED", "PENDING", "DRY_RUN_PREVIEW"}:
+                document = transition_document(
+                    current,
+                    new_state="DIRTY",
+                    cancellation_generation=cancellation_generation(current) + 1,
+                    stop_requested=True,
+                    invalidated_at=now_iso(),
+                    invalidation_reason=reason,
+                    active_targets=[],
+                    pending_targets=[],
+                )
+                write_state(self.root, document)
+                pending = read_pending(self.root)
+                if pending and pending.get("state") == "PENDING":
+                    write_pending(
+                        self.root,
+                        {
+                            **pending,
+                            "state": "CANCELLED",
+                            "cancelled_at": now_iso(),
+                            "reason": reason,
+                        },
+                    )
+                self._update_registry(document)
+            else:
+                document = current
+        if document is not current:
+            self._log_transition(current, document)
+        return document
+
+    @contextmanager
+    def config_change_guard(self, reason: str) -> Iterator[None]:
+        """Serialize a short atomic config update with runtime invalidation."""
+        with self.transition_lock("config_change"):
+            current = read_state(self.root)
+            if current and current.get("state") in {
+                "PROGRAMMING", "STARTING", "STARTED", "RECIPE_RUNNING",
+                "REHEARSAL_PENDING", "STOPPING",
+            }:
+                raise RuntimeError(
+                    f"cannot change calibration while state={current.get('state')}"
+                )
+            yield
+            latest = read_state(self.root)
+            if latest and latest.get("state") in {"ARMED", "PENDING", "DRY_RUN_PREVIEW"}:
+                document = transition_document(
+                    latest,
+                    new_state="DIRTY",
+                    cancellation_generation=cancellation_generation(latest) + 1,
+                    stop_requested=True,
+                    invalidated_at=now_iso(),
+                    invalidation_reason=reason,
+                    active_targets=[],
+                    pending_targets=[],
+                )
+                write_state(self.root, document)
+                pending = read_pending(self.root)
+                if pending and pending.get("state") == "PENDING":
+                    write_pending(
+                        self.root,
+                        {
+                            **pending,
+                            "state": "CANCELLED",
+                            "cancelled_at": now_iso(),
+                            "reason": reason,
+                        },
+                    )
+                self._update_registry(document)
+            else:
+                document = latest
+        if latest and document and document is not latest:
+            self._log_transition(latest, document)
 
     @contextmanager
     def start_command_guard(self, token: RunToken, role: str) -> Iterator[None]:

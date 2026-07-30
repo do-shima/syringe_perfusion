@@ -9,7 +9,7 @@ from threading import Event
 from typing import Any, Callable
 
 from .a4 import A4Pump, pump_from_config
-from .config import ConfigResolution, load_config, resolve_config
+from .config import ConfigResolution, load_config, load_user_settings, resolve_config
 from .coordinator import (
     OperationCoordinator,
     RunToken,
@@ -183,6 +183,19 @@ def start_armed_pair(
 ) -> dict[str, Any]:
     resolution = config if isinstance(config, ConfigResolution) else resolve_config(config)
     root = resolution.active_config_dir
+    commissioning_policy_error = ""
+    preferences = load_user_settings().get("ui_preferences", {})
+    if isinstance(preferences, dict) and preferences.get("require_current_commissioning"):
+        from .validation_store import ValidationStore
+
+        policy_status = ValidationStore(resolution).status()
+        if not policy_status["commissioned"]:
+            commissioning_policy_error = (
+                "LIVE start requires current commissioning by local production policy: "
+                f"{policy_status['status']}"
+            )
+    if commissioning_policy_error and reserved_token is None:
+        raise ValueError(commissioning_policy_error)
     factory = pump_factory or _factory(False)
     coordinator = OperationCoordinator(resolution, pump_factory=factory)
     if reserved_token is None:
@@ -195,6 +208,22 @@ def start_armed_pair(
         state = read_state(root) or {}
         if coordinator.token_status(token, {"STARTING"}) != "valid":
             raise ValueError("reserved start is stale or cancelled")
+        if commissioning_policy_error:
+            stopped = coordinator.emergency_stop(
+                metadata={
+                    "dish_id": dish_id,
+                    "condition": condition,
+                    "trigger_source": trigger_source,
+                    "reason": "strict commissioning policy changed before scheduled start",
+                }
+            )
+            coordinator.mark_fault(
+                token,
+                operation="commissioning_policy",
+                error=commissioning_policy_error,
+                stop_results=list(stopped.get("stop_results") or []),
+            )
+            raise ValueError(commissioning_policy_error)
     plan = state.get("plan")
     if not isinstance(plan, dict):
         coordinator.mark_fault(token, operation="start_armed_pair", error="reserved plan is missing")
@@ -203,6 +232,9 @@ def start_armed_pair(
         if plan.get("config_fingerprint") != config_fingerprint(root):
             raise ValueError("Active Config fingerprint does not match the armed plan")
         data = load_config(resolution)
+        from .validation_store import ValidationStore
+
+        validation_at_start = ValidationStore(resolution).status(data=data)["status"]
         in_cfg, out_cfg = _validate_pair_config(data)
         ports = scanner()
         for key, cfg in (("IN", in_cfg), ("OUT", out_cfg)):
@@ -254,6 +286,7 @@ def start_armed_pair(
                 "dish_id": dish_id,
                 "condition": condition,
                 "trigger_source": trigger_source,
+                "validation_status_at_start": validation_at_start,
             },
         )
     except Exception as exc:

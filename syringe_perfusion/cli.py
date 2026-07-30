@@ -25,11 +25,14 @@ from .operations import (
     write_settings,
 )
 from .port_scan import scan_serial_ports
+from .preflight import assess_preflight, format_preflight
 from .profiles import calculate, result_to_dict, ul_per_mm_from_inner_diameter
 from .protocol_runner import run_scheduled, schedule_armed
 from .recipe_engine import RecipeEngine
 from .recipe_model import validate_recipe
 from .recipe_store import list_recipes, load_recipe
+from .run_history import recent_runs
+from .validation_store import ValidationStore
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -42,6 +45,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     arm_status = subparsers.add_parser("arm-status", help="Inspect the shared armed perfusion state")
     arm_status.add_argument("--json", action="store_true")
+
+    preflight = subparsers.add_parser("preflight", help="Read-only production readiness assessment")
+    preflight.add_argument("--json", action="store_true")
+    preflight.add_argument("--require-commissioned", action="store_true")
+
+    validation_status = subparsers.add_parser(
+        "validation-status", help="Inspect commissioning status without moving pumps"
+    )
+    validation_status.add_argument("--json", action="store_true")
+
+    export_validation = subparsers.add_parser(
+        "export-validation", help="Export the current commissioning report"
+    )
+    export_validation.add_argument("--format", choices=["json", "csv", "markdown"], required=True)
+    export_validation.add_argument("--output", required=True)
+
+    history = subparsers.add_parser("recent-runs", help="Show normalized recent run history")
+    history.add_argument("--limit", type=int, default=20)
+    history.add_argument("--dish-id", default="")
+    history.add_argument("--condition", default="")
+    history.add_argument("--json", action="store_true")
 
     start_armed = subparsers.add_parser("start-armed", help="Start the persisted ARMED plan without reprogramming")
     add_run_metadata_args(start_armed)
@@ -165,6 +189,69 @@ def dispatch(args: argparse.Namespace) -> int:
             print(json.dumps(status, ensure_ascii=True, indent=2))
         else:
             print(_format_arm_status(status))
+        return 0
+
+    if args.command == "preflight":
+        try:
+            detected_ports = scan_serial_ports()
+        except Exception:
+            detected_ports = []
+        result = assess_preflight(
+            resolution,
+            require_commissioned=args.require_commissioned,
+            detected_ports=detected_ports,
+        )
+        if args.json:
+            print(json.dumps(result, ensure_ascii=True, indent=2))
+        else:
+            _print_console_safe(format_preflight(result))
+        return 0 if result["ready"] else 2
+
+    if args.command == "validation-status":
+        status = ValidationStore(resolution).status()
+        public = {key: value for key, value in status.items() if key != "record"}
+        if args.json:
+            print(json.dumps(public, ensure_ascii=True, indent=2))
+        else:
+            _print_console_safe(f"status: {public['status']}")
+            print(f"validation ID: {public['validation_id']}")
+            print(f"last completed: {public['last_completed_at']}")
+            print(f"current: {str(public['current']).lower()}")
+            print(f"commissioned: {str(public['commissioned']).lower()}")
+            for reason in public["stale_reasons"]:
+                print(f"STALE: {reason}")
+        return 0
+
+    if args.command == "export-validation":
+        path = ValidationStore(resolution).export(args.format, args.output)
+        print(path)
+        return 0
+
+    if args.command == "recent-runs":
+        runs = recent_runs(
+            resolution,
+            limit=args.limit,
+            dish_id=args.dish_id,
+            condition=args.condition,
+        )
+        if args.json:
+            print(json.dumps(runs, ensure_ascii=True, indent=2))
+        else:
+            for item in runs:
+                print(
+                    "\t".join(
+                        str(item[key])
+                        for key in (
+                            "timestamp",
+                            "dish_id",
+                            "condition",
+                            "plan_id",
+                            "run_id",
+                            "terminal_state",
+                            "stop_or_fault",
+                        )
+                    )
+                )
         return 0
 
     if args.command == "start-armed":
@@ -343,6 +430,11 @@ def _format_arm_status(status: dict[str, Any]) -> str:
     if status.get("fault"):
         lines.append(f"fault: {status['fault']}")
     return "\n".join(lines)
+
+
+def _print_console_safe(value: str) -> None:
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    print(value.encode(encoding, errors="replace").decode(encoding, errors="replace"))
 
 
 if __name__ == "__main__":

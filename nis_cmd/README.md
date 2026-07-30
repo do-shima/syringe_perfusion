@@ -23,3 +23,5 @@ GUI, CLI, and NIS share runtime state below `%ROOT%\config\runtime`. Do not edit
 Tracked wrappers intentionally use `%ROOT%\config`. A custom GUI Active Config does not update them automatically; update only the local deployment CFG using GUI Setup **Copy NIS CFG line**, then run `00_check_paths.cmd`.
 
 STOP cancellation is persisted and ordered against the final START UART-write gate. Persisted active/pending/armed target snapshots are used before editable config, and every unique STOP target is attempted independently. `COMPLETED_ESTIMATED` means programmed time elapsed without hardware readback.
+
+Commissioning and calibration remain GUI-oriented and are intentionally not exposed through NIS wrappers. Before installing macros, use the built CLI read-only commands `preflight` and `validation-status`, then complete and archive the Setup → Commissioning workstation checklist. NIS exit codes and UART completion do not prove physical direction, delivered flow, or physical STOP.
