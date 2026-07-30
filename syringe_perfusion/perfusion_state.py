@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -27,6 +28,8 @@ class RuntimePaths:
     state: Path
     pending: Path
     run_lock: Path
+    command_lock: Path
+    log_lock: Path
     log: Path
 
 
@@ -37,6 +40,8 @@ def runtime_paths(config_dir: str | Path) -> RuntimePaths:
         state=root / "perfusion_state.json",
         pending=root / "pending_run.json",
         run_lock=root / "run.lock",
+        command_lock=root / "command.lock",
+        log_lock=root / "protocol.log.lock",
         log=root / "protocol_runner.log",
     )
 
@@ -46,7 +51,7 @@ def read_json(path: Path) -> dict[str, Any] | None:
         with path.open("r", encoding="utf-8") as handle:
             value = json.load(handle)
         return value if isinstance(value, dict) else None
-    except FileNotFoundError:
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
         return None
 
 
@@ -131,17 +136,52 @@ def new_run_id() -> str:
 
 
 @contextmanager
-def exclusive_run_lock(config_dir: str | Path, owner: str) -> Iterator[Path]:
-    path = runtime_paths(config_dir).run_lock
+def process_file_lock(
+    path: str | Path,
+    *,
+    owner: str,
+    run_id: str = "",
+    operation: str = "transition",
+    timeout_s: float = 5.0,
+    poll_s: float = 0.02,
+) -> Iterator[Path]:
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps({"owner": owner, "created_at": now_iso()}, ensure_ascii=False) + "\n"
-    try:
-        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError as exc:
-        raise RuntimeError("another pending or active perfusion run holds the run lock") from exc
+    payload = {
+        "owner": owner,
+        "pid": os.getpid(),
+        "created_at": now_iso(),
+        "run_id": run_id,
+        "operation": operation,
+    }
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    descriptor: int | None = None
+    while descriptor is None:
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError as exc:
+            existing = read_json(path)
+            pid = int(existing.get("pid", 0)) if existing else 0
+            if pid and process_exists(pid):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"live process {pid} holds {operation} lock for run "
+                        f"{(existing or {}).get('run_id', '')}"
+                    ) from exc
+                time.sleep(min(poll_s, max(0.0, deadline - time.monotonic())))
+                continue
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f"could not recover stale {operation} lock: {path}") from exc
+                time.sleep(poll_s)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(payload)
+            json.dump(payload, handle, ensure_ascii=False)
+            handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
         yield path
@@ -152,12 +192,86 @@ def exclusive_run_lock(config_dir: str | Path, owner: str) -> Iterator[Path]:
             pass
 
 
+def process_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        if os.name == "nt":
+            try:
+                import ctypes
+
+                process = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+                if process:
+                    ctypes.windll.kernel32.CloseHandle(process)
+                    return True
+                return False
+            except Exception:
+                return True
+        return False
+    return True
+
+
+@contextmanager
+def exclusive_run_lock(
+    config_dir: str | Path,
+    owner: str,
+    *,
+    run_id: str = "",
+    operation: str = "transition",
+    timeout_s: float = 5.0,
+) -> Iterator[Path]:
+    with process_file_lock(
+        runtime_paths(config_dir).run_lock,
+        owner=owner,
+        run_id=run_id,
+        operation=operation,
+        timeout_s=timeout_s,
+    ) as path:
+        yield path
+
+
+@contextmanager
+def command_emission_lock(
+    config_dir: str | Path,
+    owner: str,
+    *,
+    run_id: str,
+    timeout_s: float = 5.0,
+) -> Iterator[Path]:
+    with process_file_lock(
+        runtime_paths(config_dir).command_lock,
+        owner=owner,
+        run_id=run_id,
+        operation="command_emission",
+        timeout_s=timeout_s,
+    ) as path:
+        yield path
+
+
 def append_protocol_log(config_dir: str | Path, event: dict[str, Any]) -> Path:
     path = runtime_paths(config_dir).log
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {"timestamp": now_iso(), **event}
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+    try:
+        with process_file_lock(
+            runtime_paths(config_dir).log_lock,
+            owner=f"log:{os.getpid()}",
+            operation="protocol_log",
+            timeout_s=2.0,
+        ):
+            with path.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+    except Exception:
+        # Logging must never prevent safety transitions or STOP attempts.
+        return path
     return path

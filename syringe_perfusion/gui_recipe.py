@@ -105,6 +105,7 @@ class RecipeBuilderFrame(ttk.Frame):
         self.steps_scroll = ScrollableFrame(timeline, height=420)
         self.steps_scroll.grid(row=2, column=0, sticky="nsew", pady=(8, 0))
         self.step_cards: list[ttk.Frame] = []
+        self._cancel_event: threading.Event | None = None
 
         move_bar = ttk.Frame(timeline)
         move_bar.grid(row=3, column=0, sticky="ew", pady=(10, 0))
@@ -495,27 +496,58 @@ class RecipeBuilderFrame(ttk.Frame):
                 messagebox.showwarning("Reverse warning", "OUT reverse / start_reverse must be physically validated.")
             if not self.show_checklist(recipe):
                 return
-        self.app.apply_gui_pump_settings()
-        self.run_thread(self._execute_worker, recipe, dry_run)
-
-    def _execute_worker(self, recipe: Recipe, dry_run: bool) -> None:
-        engine = RecipeEngine(self.app.data)
-        events = engine.execute(
-            recipe,
-            dry_run=dry_run,
-            context={
+        try:
+            self.app.apply_gui_pump_settings()
+            data = json.loads(json.dumps(self.app.data))
+            context = {
                 "dish_id": self.app.dish_id_var.get(),
                 "condition": self.app.condition_var.get(),
                 "trigger_source": self.app.trigger_var.get(),
                 "assume_yes": dry_run,
-                "prompt_callback": self.prompt_callback,
-            },
+            }
+            config_resolution = self.app.config_resolution
+        except Exception as exc:
+            messagebox.showerror("Recipe start failed", str(exc))
+            return
+        if not self.app.begin_gui_operation("recipe"):
+            return
+        self._cancel_event = threading.Event()
+        context["cancel_event"] = self._cancel_event
+        context["prompt_callback"] = self.prompt_callback
+        self.run_thread(
+            self._execute_worker,
+            recipe,
+            dry_run,
+            data,
+            config_resolution,
+            context,
+        )
+
+    def _execute_worker(
+        self,
+        recipe: Recipe,
+        dry_run: bool,
+        data: dict[str, Any],
+        config_resolution: Any,
+        context: dict[str, Any],
+    ) -> None:
+        engine = RecipeEngine(data, config_resolution)
+        events = engine.execute(
+            recipe,
+            dry_run=dry_run,
+            context=context,
         )
         self.append_log(json.dumps(events, ensure_ascii=False))
 
     def stop_all_now(self) -> None:
+        if self._cancel_event is not None:
+            self._cancel_event.set()
         self.app.gui_stop_all_now()
         self.append_log("STOP ALL requested")
+
+    def cancel_execution(self) -> None:
+        if self._cancel_event is not None:
+            self._cancel_event.set()
 
     def show_preview(self, recipe: Recipe) -> bool:
         lines = [f"{recipe.display_name} ({recipe.recipe_id})", ""]
@@ -565,7 +597,7 @@ class RecipeBuilderFrame(ttk.Frame):
             result["ok"] = messagebox.askokcancel("Prompt check", message)
             event.set()
 
-        self.after(0, ask)
+        self.app.post_ui(ask)
         event.wait()
         return result["ok"]
 
@@ -582,13 +614,27 @@ class RecipeBuilderFrame(ttk.Frame):
                 func(*args)
             except Exception as exc:
                 message = str(exc)
-                self.after(0, lambda: messagebox.showerror("Recipe operation failed", message))
+                self.app.post_ui(self._recipe_failed, message)
+            else:
+                self.app.post_ui(self._recipe_finished)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _recipe_finished(self) -> None:
+        self._cancel_event = None
+        self.app.finish_gui_operation("recipe")
+
+    def _recipe_failed(self, message: str) -> None:
+        self._cancel_event = None
+        self.app.finish_gui_operation("recipe")
+        messagebox.showerror("Recipe operation failed", message)
 
     def append_log(self, text: str) -> None:
         def update() -> None:
             self.log.insert("end", text + "\n")
             self.log.see("end")
 
-        self.after(0, update)
+        if threading.current_thread() is threading.main_thread():
+            update()
+        else:
+            self.app.post_ui(update)

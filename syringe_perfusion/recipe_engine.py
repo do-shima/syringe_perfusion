@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
+from pathlib import Path
+from threading import Event
 from typing import Any, Callable
 
 from .a4 import pump_from_config
 from .blocks import ACTION_TO_COMMAND_KEY
+from .config import ConfigResolution
+from .coordinator import OperationCoordinator, RunToken
 from .logger import log_command, write_log
 from .profiles import calculate_profile
 from .recipe_model import Recipe, validate_recipe
@@ -15,8 +19,21 @@ PromptCallback = Callable[[str], bool]
 
 
 class RecipeEngine:
-    def __init__(self, config_data: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        config_data: dict[str, Any],
+        config: str | Path | ConfigResolution | None = None,
+        *,
+        coordinator: OperationCoordinator | None = None,
+        pump_factory: Callable[[str, dict[str, Any]], Any] | None = None,
+    ) -> None:
         self.config_data = config_data
+        self.coordinator = coordinator or (
+            OperationCoordinator(config, pump_factory=pump_factory) if config is not None else None
+        )
+        self.pump_factory = pump_factory
+        self._run_token: RunToken | None = None
+        self._cancel_event: Event | None = None
 
     def execute(
         self,
@@ -28,17 +45,31 @@ class RecipeEngine:
         ctx = context or {}
         started = time.monotonic()
         events: list[dict[str, Any]] = []
+        self._cancel_event = ctx.get("cancel_event") or Event()
+        if not dry_run:
+            if self.coordinator is None:
+                raise ValueError("LIVE recipe execution requires the shared operation coordinator")
+            self._run_token = self.coordinator.begin_recipe(self.config_data)
         try:
             for index, block in enumerate(recipe.blocks):
+                if not dry_run and not self._recipe_active():
+                    break
                 event = self._execute_block(recipe, block, index, started, dry_run, ctx)
                 events.append(event)
+                if not dry_run and not self._recipe_active():
+                    break
         except Exception:
             if not dry_run:
                 try:
-                    self.stop_all(recipe, started, len(events), dry_run=False, context=ctx, note="exception safety stop")
+                    self.stop_all(
+                        recipe, started, len(events), dry_run=False,
+                        context=ctx, note="exception safety stop",
+                    )
                 except Exception:
                     pass
             raise
+        if not dry_run and self._recipe_active() and self.coordinator and self._run_token:
+            self.coordinator.finish_recipe(self._run_token)
         return events
 
     def stop_all(
@@ -53,6 +84,17 @@ class RecipeEngine:
     ) -> list[dict[str, Any]]:
         ctx = context or {}
         start = started_monotonic if started_monotonic is not None else time.monotonic()
+        if not dry_run and self.coordinator is not None:
+            state = self.coordinator.emergency_stop(
+                metadata={
+                    "dish_id": ctx.get("dish_id", ""),
+                    "condition": ctx.get("condition", ""),
+                    "trigger_source": ctx.get("trigger_source", ""),
+                    "reason": note,
+                },
+                fallback_data=self.config_data,
+            )
+            return list(state.get("stop_results") or [])
         events = []
         for pump_key, pump_config in self.config_data["pumps"].items():
             if not pump_config.get("enabled", True):
@@ -60,7 +102,11 @@ class RecipeEngine:
             block = dict(source_block or {"id": "stop_all", "type": "stop_all"})
             block["pump"] = pump_key
             block["note"] = note
-            events.append(self._send_pump_command(recipe, block, block_index, start, dry_run, ctx, pump_key, "stop"))
+            events.append(
+                self._send_pump_command(
+                    recipe, block, block_index, start, True, ctx, pump_key, "stop"
+                )
+            )
         return events
 
     def _execute_block(
@@ -102,7 +148,19 @@ class RecipeEngine:
             start = self._event_start(recipe, block, index, started_monotonic)
             duration = float(block.get("duration_s", 0))
             if not dry_run and duration > 0:
-                time.sleep(duration)
+                if self.coordinator is None or self._run_token is None:
+                    raise RuntimeError("recipe wait has no coordinator")
+                result = self.coordinator.wait(
+                    self._run_token,
+                    duration,
+                    allowed_states={"RECIPE_RUNNING"},
+                    event=self._cancel_event,
+                )
+                if result != "completed":
+                    return self._log_nonhardware_block(
+                        recipe, block, index, started_monotonic, context, start,
+                        "wait", note=f"wait cancelled: {result}",
+                    )
             return self._log_nonhardware_block(
                 recipe,
                 block,
@@ -141,8 +199,32 @@ class RecipeEngine:
         direction = block["direction"]
         duration_ms = int(block["duration_ms"])
         self._ensure_enabled(pump_key)
-        pump = pump_from_config(pump_key, self.config_data["pumps"][pump_key], dry_run=dry_run)
-        results = pump.jog_forward(duration_ms) if direction == "forward" else pump.jog_reverse(duration_ms)
+        pump = self._make_pump(pump_key, dry_run)
+        if dry_run:
+            results = pump.jog_forward(duration_ms) if direction == "forward" else pump.jog_reverse(duration_ms)
+        else:
+            action = "manual_forward" if direction == "forward" else "manual_reverse"
+            start_result = getattr(pump, action)()
+            wait_result = self.coordinator.wait(
+                self._run_token,
+                duration_ms / 1000.0,
+                allowed_states={"RECIPE_RUNNING"},
+                event=self._cancel_event,
+            )
+            try:
+                stop_result = pump.stop()
+            except Exception:
+                self.coordinator.emergency_stop(fallback_data=self.config_data)
+                raise
+            results = [start_result, stop_result]
+            if wait_result != "completed":
+                return {
+                    **self._base_event(recipe, block, index, started_monotonic),
+                    "started_at": start,
+                    "ended_at": self._now(),
+                    "results": results,
+                    "cancelled": True,
+                }
         ended_at = self._now()
         actions = [f"manual-{direction}", "stop"]
         modes = ["jog_start", "jog_stop"]
@@ -182,8 +264,19 @@ class RecipeEngine:
         start = self._event_start(recipe, block, index, started_monotonic)
         command_key = ACTION_TO_COMMAND_KEY[action]
         self._ensure_enabled(pump_key)
-        pump = pump_from_config(pump_key, self.config_data["pumps"][pump_key], dry_run=dry_run)
-        result = getattr(pump, command_key)()
+        pump = self._make_pump(pump_key, dry_run)
+        if (
+            not dry_run
+            and action in {"start_forward", "start_reverse"}
+            and self.coordinator is not None
+            and self._run_token is not None
+        ):
+            direction = "reverse" if action == "start_reverse" else "forward"
+            result = self.coordinator.emit_start(
+                self._run_token, pump_key, pump, direction
+            )
+        else:
+            result = getattr(pump, command_key)()
         ended_at = self._now()
         profile_key = block.get("profile", "")
         calc = self._profile_info(profile_key)
@@ -212,6 +305,22 @@ class RecipeEngine:
         event = self._base_event(recipe, block, index, started_monotonic)
         event.update({"started_at": start, "ended_at": ended_at, "result": result})
         return event
+
+    def _make_pump(self, pump_key: str, dry_run: bool) -> Any:
+        cfg = self.config_data["pumps"][pump_key]
+        if dry_run or self.pump_factory is None:
+            return pump_from_config(pump_key, cfg, dry_run=dry_run)
+        return self.pump_factory(pump_key, cfg)
+
+    def _recipe_active(self) -> bool:
+        return bool(
+            self.coordinator
+            and self._run_token
+            and self.coordinator.token_status(
+                self._run_token, {"RECIPE_RUNNING"}
+            )
+            == "valid"
+        )
 
     def _log_nonhardware_block(
         self,

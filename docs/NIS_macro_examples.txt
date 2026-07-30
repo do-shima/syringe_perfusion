@@ -16,4 +16,10 @@ Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_cancel_pending.cmd");
 Cancel pending work and stop all enabled pumps:
 Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_stop_all.cmd");
 
-Legacy profile wrappers remain available for compatibility.
+Legacy profile wrappers are compatibility-only. pump_start_pushpull_fast30.cmd
+is deprecated and LIVE legacy pushpull is safety-disabled; use the armed
+wrappers above. DRY-RUN diagnostics remain available.
+
+Tracked wrappers use <A4PUMP_ROOT>\config. If GUI Setup selects a different
+Active Config, update the local deployment wrapper CFG with Setup
+"Copy NIS CFG line" and verify it with a4ctl config-path before acquisition.

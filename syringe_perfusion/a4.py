@@ -4,7 +4,8 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Any
+from contextlib import AbstractContextManager, nullcontext
+from typing import Any, Callable
 
 from .config import decode_terminator
 
@@ -73,11 +74,47 @@ class A4Pump:
     def start_reverse(self) -> dict[str, Any]:
         return self.send_raw(self.commands.get("start_reverse", DEFAULT_COMMANDS["start_reverse"]))
 
+    def start_forward_guarded(
+        self,
+        guard: Callable[[], AbstractContextManager[Any]],
+    ) -> dict[str, Any]:
+        return self.send_raw(
+            self.commands.get("start_forward", DEFAULT_COMMANDS["start_forward"]),
+            write_guard=guard,
+        )
+
+    def start_reverse_guarded(
+        self,
+        guard: Callable[[], AbstractContextManager[Any]],
+    ) -> dict[str, Any]:
+        return self.send_raw(
+            self.commands.get("start_reverse", DEFAULT_COMMANDS["start_reverse"]),
+            write_guard=guard,
+        )
+
     def manual_forward(self) -> dict[str, Any]:
         return self.send_raw(self.commands.get("manual_forward", DEFAULT_COMMANDS["manual_forward"]))
 
     def manual_reverse(self) -> dict[str, Any]:
         return self.send_raw(self.commands.get("manual_reverse", DEFAULT_COMMANDS["manual_reverse"]))
+
+    def manual_forward_guarded(
+        self,
+        guard: Callable[[], AbstractContextManager[Any]],
+    ) -> dict[str, Any]:
+        return self.send_raw(
+            self.commands.get("manual_forward", DEFAULT_COMMANDS["manual_forward"]),
+            write_guard=guard,
+        )
+
+    def manual_reverse_guarded(
+        self,
+        guard: Callable[[], AbstractContextManager[Any]],
+    ) -> dict[str, Any]:
+        return self.send_raw(
+            self.commands.get("manual_reverse", DEFAULT_COMMANDS["manual_reverse"]),
+            write_guard=guard,
+        )
 
     def stop(self) -> dict[str, Any]:
         return self.send_raw(self.commands.get("stop", DEFAULT_COMMANDS["stop"]))
@@ -130,7 +167,12 @@ class A4Pump:
             results.append(stop_result)
         return results
 
-    def send_raw(self, command: str) -> dict[str, Any]:
+    def send_raw(
+        self,
+        command: str,
+        *,
+        write_guard: Callable[[], AbstractContextManager[Any]] | None = None,
+    ) -> dict[str, Any]:
         timestamp = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
         terminator = decode_terminator(self.terminator)
         outgoing = f"{command}{terminator}".encode("ascii")
@@ -147,12 +189,13 @@ class A4Pump:
         }
 
         if self.dry_run:
-            return {
-                **base_result,
-                "response": "DRY_RUN",
-                "response_hex": "",
-                "dry_run": True,
-            }
+            with write_guard() if write_guard is not None else nullcontext():
+                return {
+                    **base_result,
+                    "response": "DRY_RUN",
+                    "response_hex": "",
+                    "dry_run": True,
+                }
 
         try:
             import serial
@@ -186,8 +229,11 @@ class A4Pump:
             except Exception:
                 pass
 
-            ser.write(outgoing)
-            ser.flush()
+            # START authorization and STOP ordering are finalized at the actual
+            # UART write boundary. Port opening/settling does not hold the gate.
+            with write_guard() if write_guard is not None else nullcontext():
+                ser.write(outgoing)
+                ser.flush()
 
             # Wait for possible echo/response.
             time.sleep(0.3)

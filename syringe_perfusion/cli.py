@@ -6,6 +6,7 @@ import sys
 from typing import Any
 
 from .config import load_config, resolve_config
+from .coordinator import OperationCoordinator
 from .operations import (
     call_action,
     cancel_pending,
@@ -217,15 +218,75 @@ def dispatch(args: argparse.Namespace) -> int:
         "trigger_source": getattr(args, "trigger_source", "CLI"),
     }
     if args.command == "send":
-        print(json.dumps(send_action(data, args.pump, args.action, dry_run=args.dry_run, **metadata), ensure_ascii=True))
+        if not args.dry_run and args.action in {
+            "start-forward",
+            "start-reverse",
+            "manual-forward",
+            "manual-reverse",
+        }:
+            coordinator = OperationCoordinator(resolution)
+            token = coordinator.begin_recipe(data, operation_type="cli_manual")
+            pump = coordinator.pump_factory(args.pump, data["pumps"][args.pump])
+            if args.action.startswith("manual-"):
+                result = coordinator.emit_manual(
+                    token,
+                    args.pump,
+                    pump,
+                    "reverse" if args.action.endswith("reverse") else "forward",
+                )
+            else:
+                result = coordinator.emit_start(
+                    token,
+                    args.pump,
+                    pump,
+                    "reverse" if args.action.endswith("reverse") else "forward",
+                )
+        else:
+            result = send_action(
+                data, args.pump, args.action, dry_run=args.dry_run, **metadata
+            )
+        print(json.dumps(result, ensure_ascii=True))
     elif args.command == "jog":
-        print(json.dumps(jog_pump(data, args.pump, args.direction, args.duration_ms, dry_run=args.dry_run, **metadata), ensure_ascii=True))
+        if args.dry_run:
+            jog_results = jog_pump(
+                data,
+                args.pump,
+                args.direction,
+                args.duration_ms,
+                dry_run=True,
+                **metadata,
+            )
+        else:
+            coordinator = OperationCoordinator(resolution)
+            token = coordinator.begin_recipe(data, operation_type="cli_jog")
+            pump = coordinator.pump_factory(args.pump, data["pumps"][args.pump])
+            start_result = coordinator.emit_manual(
+                token, args.pump, pump, args.direction
+            )
+            coordinator.wait(
+                token,
+                args.duration_ms / 1000.0,
+                allowed_states={"RECIPE_RUNNING"},
+            )
+            stopped = coordinator.emergency_stop(
+                metadata={**metadata, "reason": "jog complete"},
+                fallback_data=data,
+            )
+            jog_results = [start_result, *list(stopped.get("stop_results") or [])]
+        print(json.dumps(jog_results, ensure_ascii=True))
     elif args.command == "write-settings":
         print(json.dumps(write_settings(data, args.pump, args.speed_mm_min, args.duration_s, save=args.save, dry_run=args.dry_run, **metadata), ensure_ascii=True))
     elif args.command == "write-profile":
         print(json.dumps(write_profile(data, args.pump, args.profile, save=args.save, start_after_write=args.start_after_write, dry_run=args.dry_run, **metadata), ensure_ascii=True))
     elif args.command == "run-profile":
-        print(json.dumps(run_profile(data, args.pump, args.profile, dry_run=args.dry_run, **metadata), ensure_ascii=True))
+        print(json.dumps(run_profile(
+            data,
+            args.pump,
+            args.profile,
+            dry_run=args.dry_run,
+            coordinator=None if args.dry_run else OperationCoordinator(resolution),
+            **metadata,
+        ), ensure_ascii=True))
     elif args.command == "pushpull":
         print(json.dumps(pushpull(
             data, in_pump=args.in_pump, out_pump=args.out_pump, profile_in=args.profile_in,
@@ -251,7 +312,7 @@ def dispatch(args: argparse.Namespace) -> int:
     elif args.command == "run-recipe":
         recipe = load_recipe(args.recipe)
         validate_recipe(recipe, data)
-        events = RecipeEngine(data).execute(
+        events = RecipeEngine(data, resolution).execute(
             recipe,
             dry_run=args.dry_run,
             context={**metadata, "assume_yes": args.assume_yes},

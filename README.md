@@ -91,7 +91,9 @@ State transitions include:
 
 ```text
 DIRTY -> PROGRAMMING -> ARMED -> PENDING -> STARTING -> STARTED
-STARTED -> STOPPED
+STARTED -> COMPLETED_ESTIMATED
+any active state -> STOPPING -> STOPPED
+recipe/manual compatibility operation -> RECIPE_RUNNING -> COMPLETED_ESTIMATED
 any operational state -> FAULT
 ```
 
@@ -110,7 +112,11 @@ a4ctl.exe --config-dir "<CFG>" cancel-pending
 a4ctl.exe --config-dir "<CFG>" stop-all
 ```
 
-`start-armed` sends only the persisted IN-forward and OUT-reverse start commands; it does not recalculate or rewrite settings. `schedule-armed` launches a detached worker and returns a run ID promptly. Both the start delay and IN-to-OUT delay are cancellable. STOP ALL cancels pending state before attempting parallel STOP commands and prevents a delayed OUT start.
+`start-armed` is always immediate: it sends only the persisted IN-forward and OUT-reverse start commands and does not recalculate or rewrite settings. `schedule-armed --delay-s N` launches a detached worker and returns a run ID promptly. The GUI **GUI START delay sec** field uses this same scheduler when greater than zero; it does not change CLI `start-armed`.
+
+Scheduled, IN-to-OUT, recipe, and jog waits use the shared persisted cancellation token. START authorization is rechecked at the UART write boundary. Once STOP is accepted by the command gate for a run, no later START command for that run is authorized. STOP uses persisted active/pending/armed target snapshots before editable `pumps.json`, attempts every unique target independently, and reports `STOP_FAILED` if any STOP fails.
+
+`COMPLETED_ESTIMATED` is persisted only when the programmed duration has elapsed for the same still-`STARTED` run. It is an elapsed-time estimate and is not pump readback.
 
 No speed is changed while RUNNING/STARTED. This milestone intentionally has no live-flow adjustment.
 
@@ -328,7 +334,7 @@ Detailed setup is documented in [docs/NIS_Elements_6_02.md](docs/NIS_Elements_6_
 NIS-Elements 6.02では、次の形式で外部ファイルを実行します。
 
 ```text
-Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_fast30.cmd");
+Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_start_armed.cmd");
 ```
 
 Replace `<A4PUMP_ROOT>` with the actual installation folder on the microscope PC.
@@ -355,13 +361,18 @@ Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_stop_all.cmd");
 
 各 `.cmd` はscript位置からROOTを解決し、`set "CFG=%ROOT%\config"` と `--config-dir "%CFG%"` を使用します。Windows batchの行継続 `^` は使用せず、1 a4ctl command = 1 line、CRLFです。tracked wrapperに個人パスやCOM番号は書きません。
 
+`pump_start_pushpull_fast30.cmd` は非推奨です。LIVE legacy `pushpull` は安全のためnonzeroで拒否され、DRY-RUN診断だけを維持します。`pump_start_fast30.cmd` / `run-profile` は互換用ですが共有coordinatorで予約されます。新規NIS macroはarmed wrapperを使用してください。
+
+Tracked wrapperは再現性のため `%ROOT%\config` を明示します。GUIで別のActive Configを選んでもwrapperは自動変更されません。Setupの `Copy NIS CFG line` を使ってローカル配布用wrapperを同じディレクトリへ合わせるか、標準 `%ROOT%\config` に戻してください。
+
 Recommended acquisition mode:
 
 - Use ND Acquisition Advanced.
 - Select `Advanced for` Time Phase 2.
 - Insert the macro in `Execute before Time phase`.
 - Use two time phases when imaging should continue during stimulation.
-- `pump_start_fast30.cmd` runs immediately before Time Phase 2, and Time Phase 2 imaging continues.
+- `pump_start_armed.cmd` starts the already-programmed ARMED plan immediately before Time Phase 2, and Time Phase 2 imaging continues.
+- Use `pump_start_armed_after_300s.cmd` when the start must be scheduled without blocking NIS.
 
 Alternative acquisition mode:
 
@@ -394,13 +405,13 @@ q5h30d
 q6h1d
 ```
 
-Write Fast-30 before acquisition with:
+The compatibility wrapper can write Fast-30 before acquisition with:
 
 ```text
 <A4PUMP_ROOT>\nis_cmd\pump_write_fast30.cmd
 ```
 
-Profile writing does not start the pump by default. GUI `Start after write` and CLI `--start-after-write` should be used only when immediate start is intentional.
+Profile writing does not start the pump by default. LIVE `Start after write` / `--start-after-write` is safety-disabled; use PROGRAM / ARM and a coordinated start. DRY-RUN remains available for command diagnostics.
 
 ## Single Pump Mode
 
@@ -412,6 +423,7 @@ GUI supports IN-only single pump operation.
 - Push-pull, OUT only, and Two forward require OUT enabled.
 - STOP ALL skips disabled pumps.
 - Recipe Builder validates disabled pump usage before dry-run and run.
+- LIVE recipes reserve a shared run ID. Recipe waits are cancellable, every later pump START is re-authorized, and STOP ALL prevents subsequent recipe blocks from starting a pump.
 
 Pump enable state is stored in `config/pumps.json` and can also be changed from the GUI.
 
@@ -422,6 +434,8 @@ Pump enable state is stored in `config/pumps.json` and can also be changed from 
 - **Advanced**: Profiles、Calculator、Recipes。低頻度項目はスクロール可能です。
 
 STOP ALLは全画面共通の固定領域にあり、Escも維持します。900 x 600でもExperimentの主要操作が見えるよう、起動時画面をExperimentにしています。
+
+GUIの `GUI START delay sec` が0ならSTART ARMEDは即時実行、0より大きければCLI `schedule-armed` と同じdetached schedulerを使用してPENDINGになります。GUIは待機中もブロックせず、run ID、予定時刻、概算残り時間を表示します。CLI `start-armed` は常に即時です。
 
 ## Recipe Builder
 

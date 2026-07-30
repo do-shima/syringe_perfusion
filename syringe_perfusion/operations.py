@@ -10,13 +10,18 @@ from typing import Any, Callable
 
 from .a4 import A4Pump, pump_from_config
 from .config import ConfigResolution, load_config, resolve_config
+from .coordinator import (
+    OperationCoordinator,
+    RunToken,
+    targets_from_plan,
+    token_from_state,
+)
 from .flow_control import PerfusionSetpoint
 from .logger import log_command
 from .perfusion_state import (
     append_protocol_log,
     cancel_pending as cancel_pending_state,
     config_fingerprint,
-    exclusive_run_lock,
     now_iso,
     read_pending,
     read_state,
@@ -79,28 +84,30 @@ def program_pair(
         condition=condition,
         trigger_source=trigger_source,
     )
-    write_state(
-        root,
-        {
-            "state": "PROGRAMMING",
-            "plan_id": plan_id,
-            "started_at": now_iso(),
-            "plan": plan,
-        },
-    )
-    append_protocol_log(root, {"event": "state_transition", "from": "DIRTY", "to": "PROGRAMMING", "plan_id": plan_id})
     factory = pump_factory or _factory(dry_run)
+    coordinator = OperationCoordinator(resolution, pump_factory=factory)
+    token = coordinator.begin_program(
+        plan_id=plan_id,
+        targets=targets_from_plan(plan),
+        plan=plan,
+    )
     results: dict[str, list[dict[str, Any]]] = {}
     try:
+        if coordinator.token_status(token, {"PROGRAMMING"}) != "valid":
+            raise RuntimeError("programming cancelled before pre-stop")
         pre_stop = _stop_configured(data, dry_run=dry_run, pump_factory=factory)
         if any(not item.get("ok") for item in pre_stop):
             raise RuntimeError("pre-program STOP failed; programming was not attempted")
+        if coordinator.token_status(token, {"PROGRAMMING"}) != "valid":
+            raise RuntimeError("programming cancelled before OUT programming")
         results["OUT"] = factory("OUT", out_cfg).write_settings(
             setpoint.out_setpoint.programmed_speed_mm_min,
             setpoint.programmed_duration_s,
             save=True,
         )
         _log_program_results(root, plan_id, "OUT", results["OUT"], plan, dish_id, condition, trigger_source)
+        if coordinator.token_status(token, {"PROGRAMMING"}) != "valid":
+            raise RuntimeError("programming cancelled before IN programming")
         results["IN"] = factory("IN", in_cfg).write_settings(
             setpoint.in_setpoint.programmed_speed_mm_min,
             setpoint.programmed_duration_s,
@@ -109,40 +116,26 @@ def program_pair(
         _log_program_results(root, plan_id, "IN", results["IN"], plan, dish_id, condition, trigger_source)
     except Exception as exc:
         stop_results = _stop_configured(data, dry_run=dry_run, pump_factory=factory)
-        fault = {
-            "state": "FAULT",
-            "plan_id": plan_id,
-            "fault": {"operation": "program_pair", "error": str(exc), "at": now_iso()},
-            "stop_results": stop_results,
-        }
-        write_state(root, fault)
-        append_protocol_log(root, {"event": "fault", "plan_id": plan_id, **fault["fault"]})
+        coordinator.mark_fault(
+            token,
+            operation="program_pair",
+            error=str(exc),
+            stop_results=stop_results,
+        )
         raise
 
     if dry_run:
-        state_name = "DRY_RUN_PREVIEW"
         plan["dry_run"] = True
         plan["not_read_back"] = True
-        armed_at = None
     else:
-        state_name = "ARMED"
         plan["dry_run"] = False
-        armed_at = now_iso()
-        plan["armed_at"] = armed_at
-    state = {
-        "state": state_name,
-        "plan_id": plan_id,
-        "armed_at": armed_at,
-        "message": "PROGRAMMED — NOT READ BACK" if not dry_run else "DRY-RUN PREVIEW — NOT PROGRAMMED",
-        "plan": plan,
-        "programming_results": results,
-    }
-    write_state(root, state)
-    append_protocol_log(
-        root,
-        {"event": "state_transition", "from": "PROGRAMMING", "to": state_name, "plan_id": plan_id},
+        plan["armed_at"] = now_iso()
+    return coordinator.finish_arm(
+        token,
+        plan=plan,
+        programming_results=results,
+        dry_run=dry_run,
     )
-    return state
 
 
 def validate_armed_plan(
@@ -180,6 +173,7 @@ def start_armed_pair(
     config: str | Path | ConfigResolution,
     *,
     run_id: str | None = None,
+    reserved_token: RunToken | None = None,
     dish_id: str = "",
     condition: str = "",
     trigger_source: str = "CLI",
@@ -187,81 +181,97 @@ def start_armed_pair(
     pump_factory: PumpFactory | None = None,
     wait_event: Event | None = None,
 ) -> dict[str, Any]:
-    allowed = {"PENDING"} if run_id else {"ARMED"}
-    resolution, state, data, _ports = validate_armed_plan(config, allowed_states=allowed, scanner=scanner)
+    resolution = config if isinstance(config, ConfigResolution) else resolve_config(config)
     root = resolution.active_config_dir
-    plan = state["plan"]
-    actual_run_id = run_id or str(uuid.uuid4())
-    if run_id:
-        pending = read_pending(root)
-        if not pending or pending.get("run_id") != run_id or pending.get("state") != "PENDING":
-            raise ValueError("scheduled run is no longer pending")
     factory = pump_factory or _factory(False)
-    with exclusive_run_lock(root, actual_run_id):
-        write_state(
-            root,
-            {
-                **state,
-                "state": "STARTING",
-                "run_id": actual_run_id,
-                "started_at": now_iso(),
+    coordinator = OperationCoordinator(resolution, pump_factory=factory)
+    if reserved_token is None:
+        token, state = coordinator.reserve_start(
+            operation_type="scheduled_start" if run_id else "armed_start",
+            run_id=run_id,
+        )
+    else:
+        token = reserved_token
+        state = read_state(root) or {}
+        if coordinator.token_status(token, {"STARTING"}) != "valid":
+            raise ValueError("reserved start is stale or cancelled")
+    plan = state.get("plan")
+    if not isinstance(plan, dict):
+        coordinator.mark_fault(token, operation="start_armed_pair", error="reserved plan is missing")
+        raise ValueError("reserved plan is missing")
+    try:
+        if plan.get("config_fingerprint") != config_fingerprint(root):
+            raise ValueError("Active Config fingerprint does not match the armed plan")
+        data = load_config(resolution)
+        in_cfg, out_cfg = _validate_pair_config(data)
+        ports = scanner()
+        for key, cfg in (("IN", in_cfg), ("OUT", out_cfg)):
+            planned = plan["pumps"][key]
+            if str(cfg.get("port", "")).casefold() != str(planned.get("port", "")).casefold():
+                raise ValueError(f"{key} port differs from the armed plan")
+            verify_port_identity(
+                str(cfg["port"]),
+                planned.get("hardware_identity"),
+                ports,
+            )
+
+        results: dict[str, Any] = {}
+        in_pump = factory("IN", plan["pumps"]["IN"])
+        results["IN"] = coordinator.emit_start(token, "IN", in_pump, "forward")
+        _log_start_result(
+            root, plan, token.run_id, "IN", results["IN"],
+            dish_id, condition, trigger_source,
+        )
+        delay = float(plan["requested"]["in_to_out_delay_s"])
+        wait_result = coordinator.wait(
+            token,
+            delay,
+            allowed_states={"STARTING"},
+            event=wait_event,
+        )
+        if wait_result != "completed":
+            stopped = coordinator.emergency_stop(
+                metadata={
+                    "dish_id": dish_id,
+                    "condition": condition,
+                    "trigger_source": trigger_source,
+                    "reason": f"{wait_result} during IN-to-OUT delay",
+                }
+            )
+            return stopped
+
+        out_pump = factory("OUT", plan["pumps"]["OUT"])
+        results["OUT"] = coordinator.emit_start(token, "OUT", out_pump, "reverse")
+        _log_start_result(
+            root, plan, token.run_id, "OUT", results["OUT"],
+            dish_id, condition, trigger_source,
+        )
+        return coordinator.mark_started(
+            token,
+            duration_s=int(plan["programmed_duration_s"]),
+            results=results,
+            metadata={
                 "dish_id": dish_id,
                 "condition": condition,
                 "trigger_source": trigger_source,
             },
         )
-        append_protocol_log(
-            root,
-            {"event": "state_transition", "from": state["state"], "to": "STARTING", "plan_id": plan["plan_id"], "run_id": actual_run_id},
-        )
-        results: dict[str, Any] = {}
-        try:
-            results["IN"] = factory("IN", data["pumps"]["IN"]).start_forward()
-            _log_start_result(root, plan, actual_run_id, "IN", results["IN"], dish_id, condition, trigger_source)
-            delay = float(plan["requested"]["in_to_out_delay_s"])
-            if not _cancellable_wait(root, delay, plan["plan_id"], actual_run_id, run_id, wait_event):
-                _stop_configured(data, dry_run=False, pump_factory=factory)
-                stopped = {**state, "state": "STOPPED", "run_id": actual_run_id, "stopped_at": now_iso(), "reason": "cancelled during IN-to-OUT delay"}
-                write_state(root, stopped)
-                return stopped
-            results["OUT"] = factory("OUT", data["pumps"]["OUT"]).start_reverse()
-            _log_start_result(root, plan, actual_run_id, "OUT", results["OUT"], dish_id, condition, trigger_source)
-        except Exception as exc:
-            stop_results = _stop_configured(data, dry_run=False, pump_factory=factory)
-            fault = {
-                **state,
-                "state": "FAULT",
-                "run_id": actual_run_id,
-                "fault": {"operation": "start_armed_pair", "error": str(exc), "at": now_iso()},
-                "stop_results": stop_results,
+    except Exception as exc:
+        stopped = coordinator.emergency_stop(
+            metadata={
+                "dish_id": dish_id,
+                "condition": condition,
+                "trigger_source": trigger_source,
+                "reason": "start failure",
             }
-            write_state(root, fault)
-            append_protocol_log(root, {"event": "fault", "plan_id": plan["plan_id"], "run_id": actual_run_id, **fault["fault"]})
-            if run_id:
-                write_pending(root, {"run_id": run_id, "state": "FAULT", "error": str(exc)})
-            raise
-
-        duration = int(plan["programmed_duration_s"])
-        expected_end = (datetime.now(timezone.utc) + timedelta(seconds=duration)).astimezone().isoformat(timespec="seconds")
-        started = {
-            **state,
-            "state": "STARTED",
-            "run_id": actual_run_id,
-            "actual_started_at": now_iso(),
-            "expected_end": expected_end,
-            "start_results": results,
-            "dish_id": dish_id,
-            "condition": condition,
-            "trigger_source": trigger_source,
-        }
-        write_state(root, started)
-        if run_id:
-            write_pending(root, {"run_id": run_id, "state": "STARTED", "started_at": now_iso()})
-        append_protocol_log(
-            root,
-            {"event": "state_transition", "from": "STARTING", "to": "STARTED", "plan_id": plan["plan_id"], "run_id": actual_run_id, "expected_end": expected_end},
         )
-        return started
+        coordinator.mark_fault(
+            token,
+            operation="start_armed_pair",
+            error=str(exc),
+            stop_results=list(stopped.get("stop_results") or []),
+        )
+        raise
 
 
 def stop_all_safe(
@@ -274,57 +284,50 @@ def stop_all_safe(
     pump_factory: PumpFactory | None = None,
 ) -> dict[str, Any]:
     resolution = config if isinstance(config, ConfigResolution) else resolve_config(config)
-    root = resolution.active_config_dir
-    cancel_result = cancel_pending_state(root, "STOP ALL")
-    data = load_config(resolution)
     factory = pump_factory or _factory(dry_run)
-    results = _stop_configured(data, dry_run=dry_run, pump_factory=factory, parallel=True)
-    failures = [item for item in results if not item.get("ok")]
-    state_name = "FAULT" if failures else "STOPPED"
-    existing = read_state(root) or {}
-    state = {
-        **existing,
-        "state": state_name,
-        "stopped_at": now_iso(),
-        "stop_results": results,
-        "pending_cancellation": cancel_result,
-        "dish_id": dish_id,
-        "condition": condition,
-        "trigger_source": trigger_source,
-    }
-    if failures:
-        state["fault"] = {"operation": "stop_all", "error": "one or more STOP commands failed", "at": now_iso()}
-    write_state(root, state)
-    append_protocol_log(root, {"event": "stop_all", "state": state_name, "results": results})
-    return state
+    coordinator = OperationCoordinator(resolution, pump_factory=factory)
+    registered_root = coordinator.registered_active_root()
+    if registered_root is not None:
+        coordinator = OperationCoordinator(
+            registered_root,
+            pump_factory=factory,
+            registry_path=coordinator.registry_path,
+        )
+    try:
+        fallback_data = load_config(coordinator.resolution)
+    except Exception:
+        fallback_data = None
+    return coordinator.emergency_stop(
+        dry_run=dry_run,
+        metadata={
+            "dish_id": dish_id,
+            "condition": condition,
+            "trigger_source": trigger_source,
+        },
+        fallback_data=fallback_data,
+    )
 
 
 def get_arm_status(config: str | Path | ConfigResolution) -> dict[str, Any]:
     resolution = config if isinstance(config, ConfigResolution) else resolve_config(config)
-    state = read_state(resolution.active_config_dir) or {"state": "MISSING"}
+    coordinator = OperationCoordinator(resolution)
+    state = coordinator.reconcile_completion() or {"state": "MISSING"}
     pending = read_pending(resolution.active_config_dir)
-    result = {**state, "active_config_dir": str(resolution.active_config_dir), "pending": pending}
-    expected = state.get("expected_end")
-    if state.get("state") == "STARTED" and isinstance(expected, str):
-        try:
-            if datetime.fromisoformat(expected) <= datetime.now(timezone.utc).astimezone():
-                result["state"] = "COMPLETED_ESTIMATED"
-        except ValueError:
-            pass
-    return result
+    return {**state, "active_config_dir": str(resolution.active_config_dir), "pending": pending}
 
 
 def cancel_pending(config: str | Path | ConfigResolution, reason: str = "cancel-pending") -> dict[str, Any]:
     resolution = config if isinstance(config, ConfigResolution) else resolve_config(config)
-    result = cancel_pending_state(resolution.active_config_dir, reason)
-    state = read_state(resolution.active_config_dir)
-    if state and state.get("state") == "PENDING":
-        write_state(
-            resolution.active_config_dir,
-            {**state, "state": "STOPPED", "stopped_at": now_iso(), "reason": reason},
-        )
-    append_protocol_log(resolution.active_config_dir, {"event": "cancel_pending", "result": result})
-    return result
+    state = OperationCoordinator(resolution).emergency_stop(
+        dry_run=True,
+        metadata={"reason": reason, "trigger_source": "cancel-pending"},
+    )
+    return {
+        "state": "CANCELLED" if state.get("state") == "STOPPED" else state.get("state"),
+        "cancelled": True,
+        "reason": reason,
+        "run_id": state.get("run_id", ""),
+    }
 
 
 def _build_plan(
@@ -609,6 +612,11 @@ def write_profile(
     start_after_write: bool = False, dry_run: bool = False, dish_id: str = "",
     condition: str = "", trigger_source: str = "CLI",
 ) -> list[dict[str, Any]]:
+    if start_after_write and not dry_run:
+        raise RuntimeError(
+            "LIVE start-after-write is disabled for safety; write settings, "
+            "then use PROGRAM / ARM and a coordinated start"
+        )
     calc = profile_log_info(data, profile_key)
     if calc.get("speed_mm_min") is None or calc.get("duration_s") is None:
         raise ValueError(f"profile {profile_key} does not provide speed_mm_min and duration_s")
@@ -630,9 +638,39 @@ def write_profile(
 def run_profile(
     data: dict[str, Any], pump_key: str, profile_key: str, *, dry_run: bool = False,
     dish_id: str = "", condition: str = "", trigger_source: str = "CLI",
+    coordinator: OperationCoordinator | None = None,
 ) -> dict[str, Any]:
     info = profile_log_info(data, profile_key)
     action = "start-reverse" if data["profiles"][profile_key].get("direction", "forward") == "reverse" else "start-forward"
+    if not dry_run:
+        if coordinator is None:
+            raise RuntimeError(
+                "LIVE legacy run-profile requires the shared operation coordinator"
+            )
+        token = coordinator.begin_recipe(data, operation_type="legacy_profile")
+        pump = coordinator.pump_factory(pump_key, data["pumps"][pump_key])
+        result = coordinator.emit_start(
+            token,
+            pump_key,
+            pump,
+            "reverse" if action == "start-reverse" else "forward",
+        )
+        log_command(
+            result=result,
+            action=action,
+            dish_id=dish_id,
+            condition=condition,
+            trigger_source=trigger_source,
+            profile=profile_key,
+            syringe=info.get("syringe", ""),
+            speed_mm_min=info.get("speed_mm_min"),
+            duration_s=info.get("duration_s"),
+            target_volume_ul=info.get("target_volume_ul"),
+            estimated_volume_ul=info.get("estimated_volume_ul"),
+            note=info.get("note", ""),
+            mode="legacy_profile_coordinated",
+        )
+        return result
     return send_action(
         data, pump_key, action, dry_run=dry_run, dish_id=dish_id, condition=condition,
         trigger_source=trigger_source, profile_key=profile_key, profile_calc=info,
@@ -647,6 +685,11 @@ def pushpull(
 ) -> list[dict[str, Any]]:
     if out_delay < 0:
         raise ValueError("out_delay must be zero or positive")
+    if not dry_run:
+        raise RuntimeError(
+            "legacy LIVE pushpull is disabled for safety; use PROGRAM / ARM "
+            "and start-armed (or schedule-armed)"
+        )
     ensure_pump_enabled(data, in_pump)
     ensure_pump_enabled(data, out_pump)
     waiter = wait_event or Event()

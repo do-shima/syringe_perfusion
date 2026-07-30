@@ -1,5 +1,6 @@
 @echo off
 setlocal
+rem DEPRECATED: LIVE legacy pushpull is safety-disabled. Use pump_start_armed.cmd.
 for %%I in ("%~dp0..") do set "ROOT=%%~fI"
 set "A4=%ROOT%\a4ctl\a4ctl.exe"
 set "CFG=%ROOT%\config"

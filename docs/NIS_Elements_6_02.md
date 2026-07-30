@@ -17,6 +17,8 @@ NIS starts a plan that the GUI has already calculated, programmed, and atomicall
 
 The A4 has no verified speed/time readback. PROGRAMMED means the write sequence completed without an I/O exception; it is not independent device verification.
 
+`COMPLETED_ESTIMATED` means only that the persisted programmed duration elapsed while the same run remained STARTED. It is not device readback and does not prove that either pump moved.
+
 ## Shared state and config
 
 Every wrapper resolves:
@@ -37,6 +39,8 @@ GUI, CLI, and NIS share the four JSON config files and:
 ```
 
 Do not edit `_internal\default_config`; it is only an initial copy source. COM names are environment-specific and belong in the external `pumps.json`, never in tracked wrappers.
+
+Tracked wrappers explicitly use `%ROOT%\config`. A GUI-selected custom Active Config does not rewrite them automatically. Use Setup **Copy NIS CFG line** in the local deployment copy when a nonstandard config directory is required, and verify `a4ctl.exe --config-dir "<CFG>" config-path` before acquisition.
 
 ## NIS macros
 
@@ -66,7 +70,7 @@ Cancel pending and stop both:
 Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_stop_all.cmd");
 ```
 
-STOP ALL updates shared cancellation state before sending STOP. A waiting worker checks its unique run ID and exits without starting if the plan was changed or cancelled. Cancellation during IN-to-OUT delay stops IN and prevents OUT start.
+STOP ALL is ordered against the final UART START-write gate, persists a new cancellation generation, and then attempts every unique persisted target independently. A waiting worker checks its run ID, operation ID, state revision, and cancellation generation, including a final check after each deadline. Once STOP has been accepted for a run, that run cannot emit a later START. Cancellation during the global or IN-to-OUT delay prevents the later START; if IN already started, persisted targets are used for STOP even when current `pumps.json` is missing, malformed, disabled, or edited.
 
 ## Validation and failure behavior
 
@@ -79,7 +83,11 @@ Before start, the CLI checks:
 - HWID matches when both stored and current values are available;
 - no duplicate run lock exists.
 
+The transition lock is short-lived and re-reads persisted state before reservation. A separate command-emission gate covers only final authorization and UART write/flush, so two concurrent START requests cannot reuse one prior ARMED validation.
+
 OUT start failure after IN start triggers STOP attempts for both and records FAULT. Slider movement never sends UART commands. Speed is not changed after STARTED.
+
+GUI **GUI START delay sec** uses the same detached scheduler when greater than zero; zero starts immediately. CLI `start-armed` remains explicitly immediate, while CLI delay is always `schedule-armed --delay-s N`.
 
 Inspect:
 
@@ -91,7 +99,7 @@ Wrapper START/END/config/exit logs are in `nis_logs\nis_exec.log`; protocol stat
 
 ## Wrapper format
 
-Tracked `.cmd` files are ASCII/CRLF, contain no continuation `^`, use one a4ctl command per line, and contain no personal paths or COM numbers. Legacy profile wrappers remain for compatibility, but the armed workflow is preferred.
+Tracked `.cmd` files are ASCII/CRLF, contain no continuation `^`, use one a4ctl command per line, and contain no personal paths or COM numbers. `pump_start_pushpull_fast30.cmd` is deprecated and LIVE `pushpull` is refused; DRY-RUN diagnostics remain. Other legacy profile wrappers are compatibility-only and new macros must use the armed workflow.
 
 ## Hardware checks still required
 

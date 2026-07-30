@@ -29,6 +29,7 @@ from .operations import (
 )
 from .perfusion_state import config_fingerprint, invalidate_armed, read_state
 from .port_scan import merge_port_devices, scan_serial_ports
+from .protocol_runner import schedule_armed
 from .config import (
     ConfigResolution,
     load_config,
@@ -40,6 +41,7 @@ from .config import (
     validate_config_directory,
     validate_pump_settings,
 )
+from .coordinator import OperationCoordinator, RunToken
 from .gui_recipe import RecipeBuilderFrame
 from .profiles import calculate, calculate_profile, result_to_dict, ul_per_mm_from_inner_diameter
 from .ui_theme import ScrollableFrame, apply_theme, create_card, status_badge
@@ -71,9 +73,9 @@ class A4PumpApp(tk.Tk):
         self.ensure_gui_pump_defaults()
         self._loading_settings = True
         self._pump_settings_dirty = False
-        self._operation_running = False
-        self._program_running = False
-        self._start_running = False
+        self._active_operation: str | None = None
+        self._stop_in_flight = False
+        self._closing = False
         self._preview_after_id: str | None = None
         self._state_poll_after_id: str | None = None
         self._ui_queue_after_id: str | None = None
@@ -94,6 +96,8 @@ class A4PumpApp(tk.Tk):
         self.jog_duration_var = tk.StringVar(value="1000")
         self.hold_auto_stop_ms_var = tk.StringVar(value="4000")
         self._manual_active = False
+        self._manual_token: RunToken | None = None
+        self._manual_coordinator: OperationCoordinator | None = None
         self._manual_stop_after_id: str | None = None
         self._jog_active = False
         self._jog_stop_after_id: str | None = None
@@ -146,6 +150,7 @@ class A4PumpApp(tk.Tk):
         self.perfusion_preview_var = tk.StringVar(value="Enter a valid setpoint.")
         self.perfusion_state_var = tk.StringVar(value="DIRTY")
         self.programmed_message_var = tk.StringVar(value="")
+        self.runtime_detail_var = tk.StringVar(value="")
         self.port_scan_status_var = tk.StringVar(value="Ports not scanned")
         self.in_port_metadata_var = tk.StringVar(value="")
         self.out_port_metadata_var = tk.StringVar(value="")
@@ -380,18 +385,74 @@ class A4PumpApp(tk.Tk):
                 f"{'DRY-RUN' if self.dry_run_var.get() else 'LIVE'}"
             )
 
+    @property
+    def _program_running(self) -> bool:
+        return self._active_operation == "program"
+
+    @_program_running.setter
+    def _program_running(self, value: bool) -> None:
+        if value:
+            self._active_operation = "program"
+        elif self._active_operation == "program":
+            self._active_operation = None
+
+    @property
+    def _start_running(self) -> bool:
+        return self._active_operation in {"start", "schedule"}
+
+    @_start_running.setter
+    def _start_running(self, value: bool) -> None:
+        if value:
+            self._active_operation = "start"
+        elif self._active_operation in {"start", "schedule"}:
+            self._active_operation = None
+
+    @property
+    def _operation_running(self) -> bool:
+        return self._active_operation is not None
+
+    @_operation_running.setter
+    def _operation_running(self, value: bool) -> None:
+        if value and self._active_operation is None:
+            self._active_operation = "legacy"
+        elif not value:
+            self._active_operation = None
+
+    def begin_gui_operation(self, name: str) -> bool:
+        if self._closing:
+            self.set_status("Application is closing; no new operation accepted")
+            return False
+        if self._active_operation is not None:
+            self.set_status(f"Operation already running: {self._active_operation}")
+            return False
+        self._active_operation = name
+        self.update_runtime_controls(self.perfusion_state_var.get())
+        return True
+
+    def finish_gui_operation(self, name: str) -> None:
+        if self._active_operation == name:
+            self._active_operation = None
+        self.update_runtime_controls(self.perfusion_state_var.get())
+
     def post_ui(self, callback: Callable[..., Any], *args: Any) -> None:
         self._ui_queue.put((callback, args))
 
     def _drain_ui_queue(self) -> None:
         self._ui_queue_after_id = None
-        try:
-            while True:
+        while True:
+            try:
                 callback, args = self._ui_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
                 callback(*args)
-        except queue.Empty:
-            pass
-        if self.winfo_exists():
+            except Exception as exc:
+                try:
+                    self.status_var.set(f"UI callback failed: {exc}")
+                except Exception:
+                    pass
+                print(f"UI callback failed: {exc}")
+        if not getattr(self, "_destroyed", False) and self.winfo_exists():
             self._ui_queue_after_id = self.after(25, self._drain_ui_queue)
 
     def destroy(self) -> None:
@@ -435,6 +496,9 @@ class A4PumpApp(tk.Tk):
         )
         ttk.Label(shared, textvariable=self.experiment_config_var, style="Subtitle.TLabel").grid(
             row=4, column=0, columnspan=3, sticky="ew", pady=(2, 0)
+        )
+        ttk.Label(shared, textvariable=self.runtime_detail_var, style="Subtitle.TLabel").grid(
+            row=5, column=0, columnspan=3, sticky="ew", pady=(2, 0)
         )
 
         actions = create_card(parent, "Primary actions", "Setpoint edits only update preview; they never send UART commands.")
@@ -555,7 +619,7 @@ class A4PumpApp(tk.Tk):
         metadata.columnconfigure(1, weight=1)
         ttk.Entry(metadata, textvariable=self.dish_id_var).grid(row=0, column=0, sticky="ew", padx=(0, 2))
         ttk.Entry(metadata, textvariable=self.condition_var).grid(row=0, column=1, sticky="ew", padx=(2, 0))
-        ttk.Label(pair, text="Requested start delay sec", style="Card.TLabel").grid(row=9, column=0, sticky="w")
+        ttk.Label(pair, text="GUI START delay sec (CLI start-armed stays immediate)", style="Card.TLabel").grid(row=9, column=0, sticky="w")
         self.requested_start_delay_entry = ttk.Entry(pair, textvariable=self.requested_start_delay_var)
         self.requested_start_delay_entry.grid(row=9, column=1, sticky="ew")
         ttk.Label(pair, textvariable=self.port_scan_status_var, style="Subtitle.TLabel").grid(
@@ -930,7 +994,7 @@ class A4PumpApp(tk.Tk):
             text="Write calculated settings to A4",
             style="Success.TButton",
             takefocus=False,
-            command=self.write_calculated_settings_gui,
+            command=self.write_calculated_settings_async,
         )
         self.calc_write_button.grid(
             row=2, column=3, sticky="ew", padx=4, pady=4
@@ -986,7 +1050,7 @@ class A4PumpApp(tk.Tk):
             text="Write settings to A4",
             style="Success.TButton",
             takefocus=False,
-            command=self.write_profile_settings_gui,
+            command=self.write_profile_settings_async,
         )
         self.profile_write_button.grid(row=4, column=0, columnspan=4, sticky="ew", padx=4, pady=(8, 4))
         self.profile_log = self._make_log_box(parent, row=2, columnspan=2)
@@ -1219,8 +1283,8 @@ class A4PumpApp(tk.Tk):
             self.out_syringe_combo.configure(state="disabled" if self.same_out_syringe_var.get() else "readonly")
 
     def program_arm_gui(self) -> None:
-        if self._program_running or self._start_running:
-            self.set_status("Another perfusion operation is running")
+        if self._operation_running:
+            self.set_status(f"Another operation is running: {self._active_operation}")
             return
         try:
             self.apply_gui_pump_settings()
@@ -1246,7 +1310,8 @@ class A4PumpApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Cannot program/arm", str(exc))
             return
-        self._program_running = True
+        if not self.begin_gui_operation("program"):
+            return
         self.set_operational_state("PROGRAMMING")
         self.set_status(f"Programming both pumps using {path}")
 
@@ -1265,8 +1330,8 @@ class A4PumpApp(tk.Tk):
         threading.Thread(target=worker, daemon=True, name="a4-program-pair").start()
 
     def start_armed_gui(self) -> None:
-        if self._program_running or self._start_running:
-            self.set_status("Another perfusion operation is running")
+        if self._operation_running:
+            self.set_status(f"Another operation is running: {self._active_operation}")
             return
         if self.dry_run_var.get():
             messagebox.showerror("START refused", "Switch to LIVE and create an ARMED plan first.")
@@ -1279,16 +1344,39 @@ class A4PumpApp(tk.Tk):
             "condition": self.condition_var.get(),
             "trigger_source": self.trigger_var.get(),
         }
-        self._start_running = True
-        self.set_operational_state("STARTING")
+        try:
+            delay_s = float(self.requested_start_delay_var.get() or 0)
+            if delay_s < 0:
+                raise ValueError("GUI START delay must be zero or positive")
+        except ValueError as exc:
+            messagebox.showerror("START refused", str(exc))
+            return
+        operation_name = "schedule" if delay_s > 0 else "start"
+        if not self.begin_gui_operation(operation_name):
+            return
+        self.set_operational_state("PENDING" if delay_s > 0 else "STARTING")
 
         def worker() -> None:
             try:
-                state = start_armed_pair(
-                    self.config_resolution,
-                    scanner=lambda: scan_serial_ports(provider=list_serial_ports),
-                    **context,
-                )
+                if delay_s > 0:
+                    pending = schedule_armed(
+                        self.config_resolution,
+                        delay_s=delay_s,
+                        scanner=lambda: scan_serial_ports(provider=list_serial_ports),
+                        **context,
+                    )
+                    state = {
+                        "state": "PENDING",
+                        "run_id": pending["run_id"],
+                        "pending": pending,
+                        "message": f"Scheduled for {pending['scheduled_for']}",
+                    }
+                else:
+                    state = start_armed_pair(
+                        self.config_resolution,
+                        scanner=lambda: scan_serial_ports(provider=list_serial_ports),
+                        **context,
+                    )
                 self.post_ui(self._operation_succeeded, state)
             except Exception as exc:
                 self.post_ui(self._operation_failed, "Start failed", str(exc))
@@ -1296,16 +1384,14 @@ class A4PumpApp(tk.Tk):
         threading.Thread(target=worker, daemon=True, name="a4-start-armed").start()
 
     def _operation_succeeded(self, state: dict[str, Any]) -> None:
-        self._program_running = False
-        self._start_running = False
+        self._active_operation = None
         name = str(state.get("state", "DIRTY"))
         self.set_operational_state(name)
         self.append_log(self.run_log, json.dumps({"state": name, "plan_id": state.get("plan_id"), "run_id": state.get("run_id")}, ensure_ascii=False))
         self.set_status(str(state.get("message") or f"Perfusion state: {name}"))
 
     def _operation_failed(self, title: str, message: str) -> None:
-        self._program_running = False
-        self._start_running = False
+        self._active_operation = None
         self.set_operational_state("FAULT")
         messagebox.showerror(title, message)
 
@@ -1317,6 +1403,21 @@ class A4PumpApp(tk.Tk):
                 state = "DIRTY"
             if not self._program_running and not self._start_running:
                 self.set_operational_state(state)
+            pending = status.get("pending") if isinstance(status.get("pending"), dict) else {}
+            if state == "PENDING" and pending:
+                remaining = ""
+                scheduled_epoch = pending.get("scheduled_for_epoch")
+                if scheduled_epoch is not None:
+                    remaining_s = max(0, int(float(scheduled_epoch) - datetime.now().astimezone().timestamp()))
+                    remaining = f" · remaining ~{remaining_s}s"
+                self.runtime_detail_var.set(
+                    f"Run {pending.get('run_id', '')} · scheduled {pending.get('scheduled_for', '')}"
+                    f"{remaining} · STOP ALL/cancel available"
+                )
+            else:
+                self.runtime_detail_var.set(
+                    f"Run {status.get('run_id', '')}" if status.get("run_id") else ""
+                )
         except Exception as exc:
             self.set_status(f"Runtime state poll failed: {exc}")
         finally:
@@ -1334,7 +1435,10 @@ class A4PumpApp(tk.Tk):
         self.update_runtime_controls(state)
 
     def update_runtime_controls(self, state: str) -> None:
-        locked = state in {"PROGRAMMING", "PENDING", "STARTING", "STARTED", "RUNNING"}
+        locked = (
+            state in {"PROGRAMMING", "PENDING", "STARTING", "STARTED", "RUNNING", "RECIPE_RUNNING", "STOPPING"}
+            or self._active_operation is not None
+        )
         for widget in getattr(self, "setpoint_widgets", []):
             try:
                 if isinstance(widget, ttk.Combobox):
@@ -1348,7 +1452,13 @@ class A4PumpApp(tk.Tk):
         if hasattr(self, "experiment_write_button"):
             self.experiment_write_button.configure(state="disabled" if locked or self.current_perfusion_setpoint is None else "normal")
         if hasattr(self, "experiment_start_button"):
-            self.experiment_start_button.configure(state="normal" if state == "ARMED" and not self.dry_run_var.get() else "disabled")
+            self.experiment_start_button.configure(
+                state="normal"
+                if state == "ARMED"
+                and not self.dry_run_var.get()
+                and self._active_operation is None
+                else "disabled"
+            )
 
     def _mark_pump_settings_dirty(self, *_args: Any) -> None:
         if not self._loading_settings:
@@ -1611,16 +1721,27 @@ class A4PumpApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Connection test failed", str(exc))
             return
+        if not self.begin_gui_operation("connection_test"):
+            return
 
         def worker() -> None:
             try:
                 messages = self._perform_connection_test(snapshot, pump_key, dry_run)
-                for message in messages:
-                    self.append_log(self.pump_log, message)
+                self.post_ui(self._connection_test_succeeded, messages)
             except Exception as exc:
-                self.post_ui(messagebox.showerror, "Connection test failed", str(exc))
+                self.post_ui(
+                    self._serial_operation_failed,
+                    "connection_test",
+                    "Connection test failed",
+                    str(exc),
+                )
 
         threading.Thread(target=worker, daemon=True, name="a4-connection-test").start()
+
+    def _connection_test_succeeded(self, messages: list[str]) -> None:
+        self.finish_gui_operation("connection_test")
+        for message in messages:
+            self.append_log(self.pump_log, message)
 
     @staticmethod
     def _perform_connection_test(
@@ -1840,30 +1961,113 @@ class A4PumpApp(tk.Tk):
         jog_duration_ms: int | None = None,
     ) -> None:
         self.apply_gui_pump_settings()
-        result = send_action(
-            self.data,
-            pump_key,
-            action,
-            dry_run=self.dry_run_var.get(),
-            dish_id=self.dish_id_var.get(),
-            condition=self.condition_var.get(),
-            trigger_source="Manual",
-            mode=mode,
-            jog_duration_ms=jog_duration_ms,
-        )
+        data = json.loads(json.dumps(self.data))
+        dry_run = self.dry_run_var.get()
+        context = {
+            "dry_run": dry_run,
+            "dish_id": self.dish_id_var.get(),
+            "condition": self.condition_var.get(),
+            "trigger_source": "Manual",
+            "mode": mode,
+            "jog_duration_ms": jog_duration_ms,
+        }
+        is_stop = action == "stop"
+        if not is_stop and not self.begin_gui_operation("manual"):
+            return
+        coordinator: OperationCoordinator | None = None
+        token: RunToken | None = None
+        if not is_stop and not dry_run:
+            try:
+                coordinator = OperationCoordinator(self.config_resolution)
+                token = coordinator.begin_recipe(data, operation_type="manual")
+                self._manual_coordinator = coordinator
+                self._manual_token = token
+            except Exception:
+                self.finish_gui_operation("manual")
+                raise
+
+        def worker() -> None:
+            try:
+                if dry_run:
+                    result = send_action(data, pump_key, action, **context)
+                elif is_stop:
+                    stop_coordinator = self._manual_coordinator or OperationCoordinator(
+                        self.config_resolution
+                    )
+                    stopped = stop_coordinator.emergency_stop(
+                        metadata={"trigger_source": "Manual", "reason": mode},
+                        fallback_data=data,
+                    )
+                    result = {"response": stopped.get("state", ""), "state": stopped}
+                else:
+                    assert coordinator is not None and token is not None
+                    pump = coordinator.pump_factory(pump_key, data["pumps"][pump_key])
+                    direction = "reverse" if action == "manual-reverse" else "forward"
+                    result = coordinator.emit_manual(token, pump_key, pump, direction)
+                    self.post_ui(self._manual_started, coordinator, token)
+                self.post_ui(
+                    self._manual_command_succeeded,
+                    pump_key,
+                    action,
+                    mode,
+                    result,
+                    is_stop,
+                )
+            except Exception as exc:
+                self.post_ui(
+                    self._manual_command_failed,
+                    action,
+                    str(exc),
+                    is_stop,
+                )
+
+        threading.Thread(
+            target=worker,
+            daemon=True,
+            name=f"a4-manual-{pump_key.casefold()}-{action}",
+        ).start()
+
+    def _manual_started(
+        self,
+        coordinator: OperationCoordinator,
+        token: RunToken,
+    ) -> None:
+        self._manual_coordinator = coordinator
+        self._manual_token = token
+
+    def _manual_command_succeeded(
+        self,
+        pump_key: str,
+        action: str,
+        mode: str,
+        result: dict[str, Any],
+        is_stop: bool,
+    ) -> None:
         self.append_log(self.pump_log, json.dumps(result, ensure_ascii=False))
         self.set_status(f"{pump_key} {action}: {mode}")
+        if is_stop:
+            self._manual_coordinator = None
+            self._manual_token = None
+            self.finish_gui_operation("manual")
+
+    def _manual_command_failed(self, action: str, message: str, is_stop: bool) -> None:
+        if not is_stop:
+            self.finish_gui_operation("manual")
+        messagebox.showerror(f"Manual {action} failed", message)
 
     def on_escape_stop(self, _event: tk.Event[Any] | None = None) -> str:
         self.gui_stop_all_now()
         return "break"
 
     def on_close(self) -> None:
-        if getattr(self, "_closing", False):
+        if self._closing:
             return
         self._closing = True
         self.cancel_hold_auto_stop()
         self.cancel_jog_timer()
+        recipe_tab = getattr(self, "recipe_tab", None)
+        if recipe_tab is not None and hasattr(recipe_tab, "cancel_execution"):
+            recipe_tab.cancel_execution()
         if self._state_poll_after_id is not None:
             try:
                 self.after_cancel(self._state_poll_after_id)
@@ -1890,17 +2094,66 @@ class A4PumpApp(tk.Tk):
             "condition": self.condition_var.get(),
             "trigger_source": "Manual",
         }
-        self.withdraw()
+        self.set_status("Closing: cancelling operations and sending emergency STOP")
+        deadline = datetime.now().astimezone().timestamp() + 5.0
 
         def close_worker() -> None:
             try:
-                stop_all_safe(self.config_resolution, **context)
+                result = stop_all_safe(self.config_resolution, **context)
+                self.post_ui(self._finish_close_stop, result, None)
             except Exception as exc:
-                print(f"Close stop_all failed: {exc}")
-            finally:
-                self.post_ui(self.destroy)
+                self.post_ui(self._finish_close_stop, None, str(exc))
 
-        threading.Thread(target=close_worker, daemon=True).start()
+        if not self._stop_in_flight:
+            self._stop_in_flight = True
+            threading.Thread(
+                target=close_worker,
+                daemon=True,
+                name="a4-close-stop",
+            ).start()
+        self._close_deadline = deadline
+        self.after(50, self._poll_close_completion)
+
+    def _finish_close_stop(
+        self,
+        result: dict[str, Any] | None,
+        error: str | None,
+    ) -> None:
+        self._stop_in_flight = False
+        self._close_stop_result = result
+        self._close_stop_error = error
+
+    def _poll_close_completion(self) -> None:
+        if not self._closing or getattr(self, "_destroyed", False):
+            return
+        error = getattr(self, "_close_stop_error", None)
+        result = getattr(self, "_close_stop_result", None)
+        if error is not None:
+            self._closing = False
+            messagebox.showerror(
+                "Close cancelled — STOP failed",
+                f"{error}\n\nThe window remains open because safe stopping was not confirmed.",
+            )
+            return
+        if result is not None:
+            if result.get("state") == "STOPPED":
+                self.destroy()
+                return
+            self._closing = False
+            messagebox.showerror(
+                "Close cancelled — STOP incomplete",
+                "One or more pump STOP attempts failed. The window remains open.",
+            )
+            return
+        if datetime.now().astimezone().timestamp() >= self._close_deadline:
+            self._closing = False
+            messagebox.showerror(
+                "Close cancelled — STOP timeout",
+                "Emergency STOP did not finish within 5 seconds. "
+                "The window remains open and no new START is permitted by persisted cancellation.",
+            )
+            return
+        self.after(50, self._poll_close_completion)
 
     def update_syringe_info(self) -> None:
         syringe = self.data["syringes"][self.syringe_var.get()]
@@ -1962,6 +2215,121 @@ class A4PumpApp(tk.Tk):
             self.profile_result_var.set("\n".join(line for line in lines if line != ""))
         except Exception as exc:
             self.profile_result_var.set(f"ERROR: {exc}")
+
+    def write_profile_settings_async(self) -> None:
+        try:
+            self.apply_gui_pump_settings()
+            profile_key = self.profile_var.get()
+            pump_key = self.profile_write_pump_var.get()
+            profile = dict(self.data["profiles"][profile_key])
+            syringe_key = profile["syringe"]
+            calc = calculate_profile(
+                profile, self.data["syringes"][syringe_key], syringe_key
+            )
+            if calc.speed_mm_min is None or calc.duration_s is None:
+                raise ValueError(f"profile {profile_key} does not provide speed/time settings")
+            save = self.profile_save_after_write_var.get()
+            start_after_write = self.profile_start_after_write_var.get()
+            commands = format_settings_commands(calc.speed_mm_min, calc.duration_s, save=save)
+            if start_after_write:
+                commands.append(
+                    "q6h3d" if profile.get("direction", "forward") == "reverse" else "q6h2d"
+                )
+            if not self.confirm_settings_write(
+                calc.speed_mm_min,
+                calc.duration_s,
+                commands,
+                start_after_write=start_after_write,
+            ):
+                return
+            data = json.loads(json.dumps(self.data))
+            context = {
+                "dry_run": self.dry_run_var.get(),
+                "dish_id": self.dish_id_var.get(),
+                "condition": self.condition_var.get(),
+                "trigger_source": "Manual",
+            }
+        except Exception as exc:
+            messagebox.showerror("Profile write failed", str(exc))
+            return
+        if not self.begin_gui_operation("profile_write"):
+            return
+
+        def worker() -> None:
+            try:
+                results = write_profile(
+                    data,
+                    pump_key,
+                    profile_key,
+                    save=save,
+                    start_after_write=start_after_write,
+                    **context,
+                )
+                self.post_ui(self._serial_operation_succeeded, "profile_write", self.profile_log, results)
+            except Exception as exc:
+                self.post_ui(self._serial_operation_failed, "profile_write", "Profile write failed", str(exc))
+
+        threading.Thread(target=worker, daemon=True, name="a4-profile-write").start()
+
+    def write_calculated_settings_async(self) -> None:
+        try:
+            self.apply_gui_pump_settings()
+            if self.last_calc_result is None:
+                raise ValueError("Run Calculate before writing settings.")
+            speed = self.last_calc_result.get("speed_mm_min")
+            duration = self.last_calc_result.get("duration_s")
+            if speed is None or duration is None:
+                raise ValueError("calculation result does not include speed/time")
+            save = self.calc_save_after_write_var.get()
+            if not self.confirm_settings_write(
+                float(speed),
+                float(duration),
+                format_settings_commands(float(speed), float(duration), save=save),
+            ):
+                return
+            data = json.loads(json.dumps(self.data))
+            pump_key = self.calc_write_pump_var.get()
+            context = {
+                "dry_run": self.dry_run_var.get(),
+                "dish_id": self.dish_id_var.get(),
+                "condition": self.condition_var.get(),
+                "trigger_source": "Manual",
+            }
+        except Exception as exc:
+            messagebox.showerror("Calculated write failed", str(exc))
+            return
+        if not self.begin_gui_operation("calculator_write"):
+            return
+
+        def worker() -> None:
+            try:
+                results = write_settings(
+                    data,
+                    pump_key,
+                    float(speed),
+                    float(duration),
+                    save=save,
+                    **context,
+                )
+                self.post_ui(self._serial_operation_succeeded, "calculator_write", self.pump_log, results)
+            except Exception as exc:
+                self.post_ui(self._serial_operation_failed, "calculator_write", "Calculated write failed", str(exc))
+
+        threading.Thread(target=worker, daemon=True, name="a4-calculator-write").start()
+
+    def _serial_operation_succeeded(
+        self,
+        name: str,
+        log_box: tk.Text,
+        result: Any,
+    ) -> None:
+        self.finish_gui_operation(name)
+        self.append_log(log_box, json.dumps(result, ensure_ascii=False))
+        self.set_status(f"{name.replace('_', ' ')} completed")
+
+    def _serial_operation_failed(self, name: str, title: str, message: str) -> None:
+        self.finish_gui_operation(name)
+        messagebox.showerror(title, message)
 
     def write_profile_settings_gui(self, *, confirm: bool = True) -> list[dict[str, Any]] | None:
         self.apply_gui_pump_settings()
@@ -2080,17 +2448,60 @@ class A4PumpApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Operation failed", str(exc))
             return
+        operation_name = f"{pump_key.casefold()}_{action}"
+        is_stop = action == "stop"
+        if not is_stop and not self.begin_gui_operation(operation_name):
+            return
+        coordinator: OperationCoordinator | None = None
+        token: RunToken | None = None
+        if not is_stop and not context["dry_run"] and action.startswith("start-"):
+            try:
+                coordinator = OperationCoordinator(self.config_resolution)
+                token = coordinator.begin_recipe(data, operation_type="manual_start")
+            except Exception as exc:
+                self.finish_gui_operation(operation_name)
+                messagebox.showerror("Operation failed", str(exc))
+                return
 
         def worker() -> None:
             try:
-                result = send_action(data, pump_key, action, **context)
-                self.post_ui(self._gui_send_succeeded, pump_key, action, result)
+                if is_stop and not context["dry_run"]:
+                    state = OperationCoordinator(self.config_resolution).emergency_stop(
+                        metadata={"trigger_source": "Manual", "reason": f"{pump_key} stop"},
+                        fallback_data=data,
+                    )
+                    result = {"response": state.get("state", ""), "state": state}
+                elif coordinator is not None and token is not None:
+                    pump = coordinator.pump_factory(pump_key, data["pumps"][pump_key])
+                    result = coordinator.emit_start(
+                        token,
+                        pump_key,
+                        pump,
+                        "reverse" if action == "start-reverse" else "forward",
+                    )
+                else:
+                    result = send_action(data, pump_key, action, **context)
+                self.post_ui(
+                    self._gui_send_succeeded,
+                    pump_key,
+                    action,
+                    result,
+                    operation_name if not is_stop else "",
+                )
             except Exception as exc:
-                self.post_ui(messagebox.showerror, "Operation failed", str(exc))
+                self.post_ui(self._serial_operation_failed, operation_name, "Operation failed", str(exc))
 
         threading.Thread(target=worker, daemon=True, name=f"a4-{pump_key.casefold()}-{action}").start()
 
-    def _gui_send_succeeded(self, pump_key: str, action: str, result: dict[str, Any]) -> None:
+    def _gui_send_succeeded(
+        self,
+        pump_key: str,
+        action: str,
+        result: dict[str, Any],
+        operation_name: str = "",
+    ) -> None:
+        if operation_name:
+            self.finish_gui_operation(operation_name)
         self.append_log(self.pump_log, json.dumps(result, ensure_ascii=False))
         self.set_status(f"{pump_key} {action}: {result.get('response', '')}")
 
@@ -2099,6 +2510,12 @@ class A4PumpApp(tk.Tk):
         self.cancel_jog_timer()
         self.set_jog_buttons_enabled(True)
         self._manual_active = False
+        recipe_tab = getattr(self, "recipe_tab", None)
+        if recipe_tab is not None and hasattr(recipe_tab, "cancel_execution"):
+            recipe_tab.cancel_execution()
+        if self._stop_in_flight:
+            self.set_status("STOPPING — cancellation request already queued")
+            return
         try:
             self.apply_gui_pump_settings()
         except Exception as exc:
@@ -2111,7 +2528,15 @@ class A4PumpApp(tk.Tk):
             "trigger_source": self.trigger_var.get(),
         }
         # STOP ALL bypasses the regular-operation guard and remains available.
-        threading.Thread(target=self._stop_all_worker, args=(context,), daemon=True).start()
+        self._stop_in_flight = True
+        self.set_operational_state("STOPPING")
+        self.set_status("STOPPING — cancellation request queued")
+        threading.Thread(
+            target=self._stop_all_worker,
+            args=(context,),
+            daemon=True,
+            name="a4-emergency-stop",
+        ).start()
 
     def _stop_all_worker(self, context: dict[str, Any] | None = None) -> None:
         common = context or {
@@ -2122,12 +2547,31 @@ class A4PumpApp(tk.Tk):
         }
         try:
             results = stop_all_safe(self.config_resolution, **common)
-            self.append_log(self.pump_log, json.dumps(results, ensure_ascii=False))
-            self.append_log(self.run_log, json.dumps(results, ensure_ascii=False))
-            self.set_status("STOP ALL sent")
+            self.post_ui(self._stop_all_succeeded, results)
         except Exception as exc:
-            self.set_status(f"STOP ALL failed: {exc}")
-            self.post_ui(messagebox.showerror, "STOP ALL failed", str(exc))
+            self.post_ui(self._stop_all_failed, str(exc))
+
+    def _stop_all_succeeded(self, results: dict[str, Any]) -> None:
+        self._stop_in_flight = False
+        if self._closing:
+            self._close_stop_result = results
+            return
+        self._active_operation = None
+        self._manual_coordinator = None
+        self._manual_token = None
+        self.append_log(self.pump_log, json.dumps(results, ensure_ascii=False))
+        self.append_log(self.run_log, json.dumps(results, ensure_ascii=False))
+        state = str(results.get("state", "STOPPED"))
+        self.set_operational_state(state)
+        self.set_status("STOP ALL completed" if state == "STOPPED" else f"STOP ALL: {state}")
+
+    def _stop_all_failed(self, message: str) -> None:
+        self._stop_in_flight = False
+        if self._closing:
+            self._close_stop_error = message
+            return
+        self.set_status(f"STOP ALL failed: {message}")
+        messagebox.showerror("STOP ALL failed", message)
 
     def start_run_mode(self) -> None:
         captured = self._capture_run_mode()

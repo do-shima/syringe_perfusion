@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import logs_dir
+from .perfusion_state import process_file_lock
 
 
 LOG_COLUMNS = [
@@ -56,12 +57,22 @@ def write_log(row: dict[str, Any], log_root: str | Path | None = None) -> Path:
     path = today_log_path(log_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     complete = normalize_log_row(row)
-    needs_header = not path.exists() or path.stat().st_size == 0
-    with path.open("a", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=LOG_COLUMNS)
-        if needs_header:
-            writer.writeheader()
-        writer.writerow(complete)
+    try:
+        with process_file_lock(
+            path.with_suffix(path.suffix + ".lock"),
+            owner=f"csv:{uuid.uuid4()}",
+            operation="csv_log",
+            timeout_s=2.0,
+        ):
+            needs_header = not path.exists() or path.stat().st_size == 0
+            with path.open("a", encoding="utf-8", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=LOG_COLUMNS)
+                if needs_header:
+                    writer.writeheader()
+                writer.writerow(complete)
+    except Exception:
+        # Safety actions must not be aborted by a logging failure.
+        return path
     return path
 
 
