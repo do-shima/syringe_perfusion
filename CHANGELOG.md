@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.2.0-beta.2] - 2026-07-30
+
+Superseding hardware-validation release candidate. Beta.1 is retained as historical evidence but is superseded for HIL use because lower Experiment controls were inaccessible in the initial viewport.
+
+### Fixed
+
+- Rebuilt Experiment as a fixed header/action/footer layout with a vertically scrollable content viewport.
+- Added deterministic narrow one-column and wide two-column layouts with responsive text wrapping.
+- Removed conflicting `bind_all` / `unbind_all` mouse-wheel behavior from reusable scrolling workspaces.
+
+### Added
+
+- Complete UTF-8 English and Japanese GUI catalogs, Auto locale detection, persistent UI-only language choice, and runtime switching.
+- Canonical display mappings that keep modes, states, JSON values, protocol bytes, run IDs, and scientific settings language-independent.
+- Japanese-capable Windows font selection with safe fallbacks.
+
+### Compatibility
+
+- Control compatibility remains `1`; UART, flow, timing, START/STOP, cancellation, commissioning, and calibration interpretation are unchanged.
+
 ## [0.2.0-beta.1] - 2026-07-30
 
 Hardware-validation release candidate.

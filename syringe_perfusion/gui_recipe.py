@@ -46,7 +46,9 @@ class RecipeBuilderFrame(ttk.Frame):
         self.prop_duration_ms_var = tk.StringVar(value="1000")
         self.prop_message_var = tk.StringVar(value="")
         self.prop_note_var = tk.StringVar(value="")
-        self.validation_status_var = tk.StringVar(value="Validation: not checked")
+        self.validation_status_var = tk.StringVar(
+            value=f"{self.app.t('label.preflight')}: {self.app.t('status.not_checked_lower')}"
+        )
         self.recipe_status_var = tk.StringVar(value="0 blocks")
         self.selected_block_index: int | None = None
 
@@ -218,13 +220,13 @@ class RecipeBuilderFrame(ttk.Frame):
     def validate_current(self) -> bool:
         try:
             recipe = self.make_recipe()
-            self.validation_status_var.set("Validation: OK")
+            self.validation_status_var.set(self.app.t("recipe.validation_ok"))
             self.validation_badge.configure(text="OK", style="BadgeEnabled.TLabel")
             self.update_status_line(recipe)
             self.append_log("Validation: OK")
             return True
         except Exception as exc:
-            self.validation_status_var.set(f"Validation: {exc}")
+            self.validation_status_var.set(self.app.t("recipe.validation_error", error=exc))
             self.validation_badge.configure(text="ERROR", style="BadgeDanger.TLabel")
             self.append_log(f"Validation failed: {exc}")
             return False
@@ -309,9 +311,15 @@ class RecipeBuilderFrame(ttk.Frame):
 
     def update_status_line(self, recipe: Recipe | None = None) -> None:
         pumps = sorted({str(block.get("pump")) for block in self.blocks if block.get("pump")})
-        pump_text = ", ".join(pumps) if pumps else "none"
-        validation = "OK" if recipe is not None else "not checked"
-        self.recipe_status_var.set(f"{len(self.blocks)} blocks | Validation: {validation} | Pumps: {pump_text}")
+        pump_text = ", ".join(pumps) if pumps else self.app.t("status.no_pumps")
+        validation = "OK" if recipe is not None else self.app.t("status.not_checked_lower")
+        self.recipe_status_var.set(
+            self.app.t("status.recipe", count=len(self.blocks), validation=validation, pumps=pump_text)
+        )
+
+    def refresh_language(self) -> None:
+        self.app.localizer.bind_literal_tree(self)
+        self.update_status_line()
 
     def selected_index(self) -> int | None:
         return self.selected_block_index

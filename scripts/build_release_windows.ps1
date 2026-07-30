@@ -30,6 +30,17 @@ $testSummary = [string]($pytestOutput | Select-Object -Last 1)
 if (-not $testSummary) {
     $testSummary = "pytest: all tests passed"
 }
+$pytestCommand = Get-Command pytest
+$python = (Resolve-Path (Join-Path (Split-Path $pytestCommand.Source -Parent) "..\python.exe")).Path
+
+& $python scripts\static_release_checks.py
+if ($LASTEXITCODE -ne 0) {
+    throw "Static release safety checks failed."
+}
+& $python -c "from syringe_perfusion.i18n import load_catalog, validate_catalog_pair; errors = validate_catalog_pair(load_catalog('en'), load_catalog('ja')); assert not errors, errors"
+if ($LASTEXITCODE -ne 0) {
+    throw "Locale catalog validation failed."
+}
 
 git diff --check
 if ($LASTEXITCODE -ne 0) {
@@ -51,6 +62,18 @@ $cli = Join-Path $stage "a4ctl\a4ctl.exe"
 $gui = Join-Path $stage "A4PumpGUI\A4PumpGUI.exe"
 if (-not (Test-Path -LiteralPath $cli) -or -not (Test-Path -LiteralPath $gui)) {
     throw "Packaged executables are missing."
+}
+$guiLocales = Join-Path $stage "A4PumpGUI\_internal\syringe_perfusion\locales"
+$cliLocales = Join-Path $stage "a4ctl\_internal\syringe_perfusion\locales"
+foreach ($localePath in @(
+    (Join-Path $guiLocales "en.json"),
+    (Join-Path $guiLocales "ja.json"),
+    (Join-Path $cliLocales "en.json"),
+    (Join-Path $cliLocales "ja.json")
+)) {
+    if (-not (Test-Path -LiteralPath $localePath)) {
+        throw "Packaged locale catalog is missing: $localePath"
+    }
 }
 
 & $cli --version
@@ -95,19 +118,35 @@ Copy-Item -LiteralPath @(
     (Join-Path $repository "config\recipes.json")
 ) -Destination $smokeConfig
 $env:A4PUMP_CONFIG_DIR = $smokeConfig
+$smokeLocalAppData = Join-Path $repository "build\release-gui-smoke-localappdata"
+if (Test-Path -LiteralPath $smokeLocalAppData) {
+    Remove-Item -LiteralPath $smokeLocalAppData -Recurse -Force
+}
+$settingsDirectory = Join-Path $smokeLocalAppData "A4PumpControl"
+New-Item -ItemType Directory -Path $settingsDirectory | Out-Null
+$settingsPath = Join-Path $settingsDirectory "settings.json"
+$previousLocalAppData = $env:LOCALAPPDATA
+$env:LOCALAPPDATA = $smokeLocalAppData
 try {
-    $guiProcess = Start-Process -FilePath $gui -WindowStyle Hidden -PassThru
-    Start-Sleep -Seconds 3
-    if ($guiProcess.HasExited) {
-        throw "Packaged GUI exited during smoke test."
+    foreach ($language in @("ja", "en")) {
+        $settings = @{ ui_preferences = @{ language = $language } } | ConvertTo-Json -Depth 3
+        [IO.File]::WriteAllText($settingsPath, $settings, [Text.UTF8Encoding]::new($false))
+        $guiProcess = Start-Process -FilePath $gui -WindowStyle Hidden -PassThru
+        Start-Sleep -Seconds 3
+        if ($guiProcess.HasExited) {
+            throw "Packaged GUI exited during $language locale smoke test."
+        }
+        Stop-Process -Id $guiProcess.Id
     }
-    Stop-Process -Id $guiProcess.Id
 } finally {
     Remove-Item Env:\A4PUMP_CONFIG_DIR -ErrorAction SilentlyContinue
+    if ($null -eq $previousLocalAppData) {
+        Remove-Item Env:\LOCALAPPDATA -ErrorAction SilentlyContinue
+    } else {
+        $env:LOCALAPPDATA = $previousLocalAppData
+    }
 }
 
-$pytestCommand = Get-Command pytest
-$python = (Resolve-Path (Join-Path (Split-Path $pytestCommand.Source -Parent) "..\python.exe")).Path
 & $python scripts\release_tool.py assemble `
     --repo $repository `
     --stage $stage `

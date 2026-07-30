@@ -9,7 +9,7 @@ from threading import Event
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any
 
-from .app_info import format_build_identity, get_build_info
+from .app_info import get_build_info
 from .calibration import (
     apply_syringe_calibration,
     balance_result,
@@ -97,22 +97,31 @@ class CommissioningFrame(ttk.Frame):
         ttk.Button(header, text="Refresh", command=self.refresh).grid(row=2, column=3)
         ttk.Label(header, text="Lab/workstation note", style="Card.TLabel").grid(row=3, column=0, sticky="w")
         ttk.Entry(header, textvariable=self.note_var).grid(row=3, column=1, columnspan=3, sticky="ew", padx=4)
-        ttk.Label(header, textvariable=self.progress_var, style="Value.TLabel").grid(
-            row=4, column=0, columnspan=4, sticky="w", pady=(6, 0)
+        self.progress_label = ttk.Label(
+            header,
+            textvariable=self.progress_var,
+            style="Value.TLabel",
+            justify="left",
+            anchor="w",
         )
+        self.progress_label._responsive_wrap_margin = 24  # type: ignore[attr-defined]
+        self.progress_label.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(6, 0))
         ttk.Checkbutton(
             header,
             text="Require current commissioning for LIVE armed start",
             variable=self.app.require_current_commissioning_var,
             command=self.app.save_commissioning_policy,
         ).grid(row=5, column=0, columnspan=4, sticky="w", pady=(4, 0))
-        self.build_identity_var = tk.StringVar(value=format_build_identity(get_build_info()))
-        ttk.Label(
+        self.build_identity_var = tk.StringVar(value=self.app.localized_build_identity(get_build_info()))
+        self.build_identity_label = ttk.Label(
             header,
             textvariable=self.build_identity_var,
             style="Card.TLabel",
             justify="left",
-        ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 0))
+            anchor="w",
+        )
+        self.build_identity_label._responsive_wrap_margin = 24  # type: ignore[attr-defined]
+        self.build_identity_label.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(6, 0))
         ttk.Button(
             header,
             text="Copy build identity",
@@ -120,7 +129,7 @@ class CommissioningFrame(ttk.Frame):
                 self.build_identity_var.get(),
                 "commissioning build identity",
             ),
-        ).grid(row=6, column=3, sticky="e", padx=4)
+        ).grid(row=7, column=0, columnspan=4, sticky="e", padx=4)
 
         identity = create_card(
             self,
@@ -273,7 +282,10 @@ class CommissioningFrame(ttk.Frame):
     def new_record(self) -> None:
         operator = self.operator_var.get().strip()
         if not operator:
-            messagebox.showerror("Operator required", "Enter the operator name.")
+            self.app.show_error(
+                self.app.t("dialog.operator_required"),
+                self.app.t("dialog.enter_operator"),
+            )
             return
         record = self.store.create(
             operator=operator,
@@ -299,8 +311,9 @@ class CommissioningFrame(ttk.Frame):
         )
         reasons = "; ".join(status["stale_reasons"])
         self.progress_var.set(
-            f"{status['status']} · last completed {status['last_completed_at'] or 'not completed'}"
-            + (f" · STALE: {reasons}" if reasons else "")
+            f"{self.app.localizer.display_value(status['status'])} · "
+            f"{self.app.t('label.last_completed')}: {status['last_completed_at'] or '—'}"
+            + (f" · {self.app.localizer.display_value('STALE')}: {reasons}" if reasons else "")
         )
         self.identity_text.delete("1.0", "end")
         detected = {item.get("device"): item for item in self.app.detected_ports}
@@ -309,7 +322,7 @@ class CommissioningFrame(ttk.Frame):
             metadata = detected.get(port, {})
             self.identity_text.insert(
                 "end",
-                f"{role}: {port or '(missing)'} | {metadata.get('description', 'not detected')} | "
+                f"{role}: {port or '—'} | {metadata.get('description', self.app.t('status.not_detected'))} | "
                 f"HWID={metadata.get('hwid', '')} | serial={metadata.get('serial_number', '')} | "
                 f"VID={metadata.get('vid', '')} PID={metadata.get('pid', '')} location={metadata.get('location', '')}\n",
             )
@@ -323,6 +336,11 @@ class CommissioningFrame(ttk.Frame):
                     f"  Probable stable-identity match now at {moved[0].get('device')}; "
                     "explicit confirmation is required before pumps.json changes.\n",
                 )
+
+    def refresh_language(self) -> None:
+        self.app.localizer.bind_literal_tree(self)
+        self.build_identity_var.set(self.app.localized_build_identity(get_build_info()))
+        self.refresh()
 
     def apply_probable_port(self, role: str) -> None:
         record = self._require_record()
@@ -404,20 +422,29 @@ class CommissioningFrame(ttk.Frame):
         if record is None:
             return
         if self.app.dry_run_var.get():
-            messagebox.showerror("LIVE confirmation required", "The physical paired STOP check requires LIVE mode.")
+            self.app.show_error("LIVE confirmation required", "The physical paired STOP check requires LIVE mode.")
             return
         try:
             duration_ms = int(self.direction_duration_var.get())
         except ValueError:
-            messagebox.showerror("Invalid duration", "Enter a bounded duration in milliseconds.")
+            self.app.show_error(
+                self.app.t("dialog.invalid_duration"),
+                self.app.t("dialog.enter_bounded_ms"),
+            )
             return
-        if not messagebox.askyesno(
-            "LIVE paired STOP commissioning",
-            f"Both pumps will move for at most {duration_ms} ms before independent STOP attempts.\n"
-            "IN: forward delivery\nOUT: reverse withdrawal\n"
-            "Programmed speed/flow: manual-jog setting on each device, NOT READ BACK\n"
-            "Expected volume: not scientifically estimated for manual jog\n\n"
-            "PROGRAMMED — NOT READ BACK\n\nProceed?",
+        direction_text = (
+            f"IN: {self.app.localizer.display_value('forward')}\n"
+            f"OUT: {self.app.localizer.display_value('reverse')}"
+        )
+        if not self.app.ask_yes_no(
+            self.app.t("dialog.live_title"),
+            self.app.t(
+                "dialog.live_message",
+                pump="IN / OUT",
+                direction=direction_text,
+                duration=f"{duration_ms} ms",
+            )
+            + f"\n\n{self.app.t('label.programmed_not_read')}",
         ):
             return
         if not self.app.begin_gui_operation("commissioning"):
@@ -445,22 +472,26 @@ class CommissioningFrame(ttk.Frame):
         if record is None:
             return
         if self.app.dry_run_var.get():
-            messagebox.showerror("LIVE confirmation required", "Physical direction/STOP checks require LIVE mode.")
+            self.app.show_error("LIVE confirmation required", "Physical direction/STOP checks require LIVE mode.")
             return
         try:
             duration_ms = int(self.direction_duration_var.get())
         except ValueError:
-            messagebox.showerror("Invalid duration", "Enter a bounded duration in milliseconds.")
+            self.app.show_error(
+                self.app.t("dialog.invalid_duration"),
+                self.app.t("dialog.enter_bounded_ms"),
+            )
             return
         target = self.app.data["pumps"][role]
-        if not messagebox.askyesno(
-            "LIVE bounded commissioning movement",
-            f"Pump: {role}\nCOM: {target.get('port')}\nDirection: {direction}\n"
-            f"Maximum duration: {duration_ms} ms\n"
-            "Programmed speed/flow: manual-jog setting on device, NOT READ BACK\n"
-            "Expected volume: not scientifically estimated for manual jog\n"
-            "STOP ALL remains globally available.\n\n"
-            "PROGRAMMED — NOT READ BACK\n\nProceed?",
+        if not self.app.ask_yes_no(
+            self.app.t("dialog.live_title"),
+            self.app.t(
+                "dialog.live_message",
+                pump=f"{role} / COM {target.get('port')}",
+                direction=self.app.localizer.display_value(direction),
+                duration=f"{duration_ms} ms",
+            )
+            + f"\n\n{self.app.t('label.programmed_not_read')}",
         ):
             return
         if not self.app.begin_gui_operation("commissioning"):
@@ -497,14 +528,14 @@ class CommissioningFrame(ttk.Frame):
         stop_test: bool,
     ) -> None:
         self.app.finish_gui_operation("commissioning")
-        question = (
-            f"Did pump {role} physically stop when STOP was issued?"
-            if stop_test
-            else f"Did pump {role} visibly move in the expected {direction} direction?"
+        question = self.app.t(
+            "dialog.observed_stop" if stop_test else "dialog.observed_direction",
+            pump=role,
+            direction=self.app.localizer.display_value(direction),
         )
-        answer = messagebox.askyesnocancel(
-            "Manual physical observation",
-            question + "\n\nYes = correct/stopped, No = incorrect/failed, Cancel = uncertain.",
+        answer = self.app.ask_yes_no_cancel(
+            self.app.t("dialog.manual_observation"),
+            question + "\n\n" + self.app.t("dialog.observation_choices"),
         )
         observation = (
             "stopped" if stop_test and answer is True else
@@ -562,7 +593,10 @@ class CommissioningFrame(ttk.Frame):
         try:
             delay = float(self.rehearsal_delay_var.get())
         except ValueError:
-            messagebox.showerror("Invalid delay", "Enter a bounded delay.")
+            self.app.show_error(
+                self.app.t("dialog.invalid_delay"),
+                self.app.t("dialog.enter_bounded_delay"),
+            )
             return
         if not self.app.begin_gui_operation("commissioning"):
             return
@@ -746,7 +780,7 @@ class CommissioningFrame(ttk.Frame):
         if record is None:
             return
         if self.app.dry_run_var.get():
-            messagebox.showerror("LIVE confirmation required", "A physical flow run requires LIVE mode.")
+            self.app.show_error("LIVE confirmation required", "A physical flow run requires LIVE mode.")
             return
         try:
             role = self.measurement_role_var.get()
@@ -761,12 +795,15 @@ class CommissioningFrame(ttk.Frame):
         except Exception as exc:
             messagebox.showerror("Invalid bounded flow run", str(exc))
             return
-        if not messagebox.askyesno(
-            "LIVE bounded flow measurement",
-            f"Pump: {role}\nCOM: {port}\nDirection: {direction}\n"
-            f"Programmed speed: {speed} mm/min\nMaximum duration: {duration} s\n"
-            f"Programmed travel: {travel:.4f} mm\nExpected volume: {expected_ml:.4f} mL\n"
-            "STOP ALL remains globally available.\n\nPROGRAMMED — NOT READ BACK\n\nProceed?",
+        if not self.app.ask_yes_no(
+            self.app.t("dialog.live_title"),
+            self.app.t(
+                "dialog.live_message",
+                pump=f"{role} / COM {port} / {speed} mm/min / {expected_ml:.4f} mL",
+                direction=self.app.localizer.display_value(direction),
+                duration=f"{duration} s",
+            )
+            + f"\n\n{self.app.t('label.programmed_not_read')}",
         ):
             return
         if not self.app.begin_gui_operation("commissioning"):

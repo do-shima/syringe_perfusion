@@ -2,7 +2,7 @@
 
 ## Version policy
 
-`pyproject.toml` is the sole current package-version source. PEP 440 `0.2.0b1` is rendered as human version `0.2.0-beta.1` and future tag `v0.2.0-beta.1`. Frozen applications read `_internal\build_info.json`; they do not query Git or the network at startup.
+`pyproject.toml` is the sole current package-version source. PEP 440 `0.2.0b2` is rendered as human version `0.2.0-beta.2` and future tag `v0.2.0-beta.2`. Frozen applications read `_internal\build_info.json`; they do not query Git or the network at startup. Control compatibility remains `1`.
 
 ## Release build
 
@@ -15,6 +15,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_release_window
 The script refuses tracked or untracked source changes and has no release-mode dirty override. It runs tests, `git diff --check`, both PyInstaller builds, packaged non-hardware smoke tests, wrapper/public-default scans, manifest generation, ZIP creation, and ZIP/checksum revalidation.
 
 Generated files under `release\` include the versioned directory and ZIP, artifact checksum, `SHA256SUMS.txt`, `build-manifest.json`, and release notes. Binaries are unsigned.
+
+The beta.2 package includes `syringe_perfusion\locales\en.json` and `ja.json` inside each frozen application. The strict release scan excludes local settings, runtime state, validation evidence, logs, and numeric local COM assignments. Existing beta.1 versioned artifacts are not renamed or relabeled.
 
 ## Safe installation and upgrade
 

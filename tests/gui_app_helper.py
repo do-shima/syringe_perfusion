@@ -11,6 +11,10 @@ def make_app() -> A4PumpApp:
     for _attempt in range(3):
         try:
             app = A4PumpApp()
+            # Existing GUI behavior tests use stable English labels regardless
+            # of the developer workstation UI locale.
+            app.localizer.set_preference("en")
+            app._refresh_localized_display_values()
             app.withdraw()
             return app
         except tk.TclError as exc:

@@ -105,8 +105,8 @@ def test_about_dialog_shows_build_identity_without_constructing_pump(monkeypatch
         ]
         assert text_widgets
         contents = text_widgets[0].get("1.0", "end")
-        assert "release_version: 0.2.0-beta.1" in contents
-        assert "control_compatibility: 1" in contents
+        assert "Release version: 0.2.0-beta.2" in contents
+        assert "Control compatibility: 1" in contents
         assert constructed == []
     finally:
         app.destroy()

@@ -15,7 +15,7 @@ class RunHistoryFrame(ttk.Frame):
         self.app = app
         self.dish_filter_var = tk.StringVar(value="")
         self.condition_filter_var = tk.StringVar(value="")
-        self.status_var = tk.StringVar(value="Not loaded")
+        self.status_var = tk.StringVar(value=self.app.t("status.not_loaded"))
         self.runs: list[dict[str, Any]] = []
         self._build()
 
@@ -41,11 +41,27 @@ class RunHistoryFrame(ttk.Frame):
             self.tree.column(column, width=120 if column not in {"run_id", "timestamp"} else 190)
         self.tree.grid(row=1, column=0, sticky="nsew")
         ttk.Label(self, textvariable=self.status_var).grid(row=2, column=0, sticky="w", pady=(4, 0))
+        self.refresh_language()
+
+    def refresh_language(self) -> None:
+        keys = (
+            "history.timestamp",
+            "history.dish_id",
+            "history.condition",
+            "history.run_id",
+            "history.in_flow",
+            "history.out_flow",
+            "history.terminal_state",
+        )
+        for column, key in zip(self.tree["columns"], keys):
+            self.tree.heading(column, text=self.app.t(key))
+        if not self.runs:
+            self.status_var.set(self.app.t("status.not_loaded"))
 
     def refresh_async(self) -> None:
         dish = self.dish_filter_var.get()
         condition = self.condition_filter_var.get()
-        self.status_var.set("Loading…")
+        self.status_var.set(self.app.t("status.loading"))
 
         def worker() -> None:
             try:
@@ -72,7 +88,7 @@ class RunHistoryFrame(ttk.Frame):
                 iid=str(index),
                 values=tuple(run.get(column, "") for column in self.tree["columns"]),
             )
-        self.status_var.set(error or f"{len(runs)} recent run(s)")
+        self.status_var.set(error or self.app.t("status.recent_runs", count=len(runs)))
 
     def open_details(self) -> None:
         selected = self.tree.selection()
@@ -80,7 +96,7 @@ class RunHistoryFrame(ttk.Frame):
             return
         run = self.runs[int(selected[0])]
         window = tk.Toplevel(self)
-        window.title("Run evidence")
+        window.title(self.app.t("history.evidence"))
         text = tk.Text(window, width=100, height=30, wrap="word")
         text.pack(fill="both", expand=True)
         text.insert("end", json.dumps(run, ensure_ascii=False, indent=2))

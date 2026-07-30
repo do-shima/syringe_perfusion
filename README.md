@@ -1,6 +1,6 @@
 # A4 Syringe Pump Control
 
-Release candidate: 0.2.0-beta.1 (`0.2.0b1` package metadata)
+Release candidate: 0.2.0-beta.2 (`0.2.0b2` package metadata)
 GUI: Tkinter/ttk + clam theme + custom Style  
 Control: USB-TTL UART  
 Distribution: PyInstaller one-folder  
@@ -13,6 +13,10 @@ A4/QHZS系シリンジポンプをUSB-TTL UART経由で制御する軽量Python/
 研究室内の顕微鏡PCや実験用Windows PCで、追加GUI依存を増やさずに動かすことを前提にしています。
 
 Setup内の **Commissioning** workspaceは、port identity、物理方向、Emergency STOP、delayed cancellation、直接体積/重量法flow測定、IN/OUT balance、NIS workstation確認をActive Config配下へ記録します。UART write成功は物理PASSではありません。詳細は [Hardware Commissioning Guide](docs/HARDWARE_COMMISSIONING.md) を参照してください。
+
+GUIは日本語と英語に対応します。表示言語は左サイドバーまたはSetupから `自動 / Auto`、`日本語`、`English` を選択でき、`%LOCALAPPDATA%\A4PumpControl\settings.json` のUI設定だけに保存されます。Autoは日本語Windowsで日本語、それ以外で英語を選びます。切り替えは実行状態、Active Config、設定fingerprint、ARMED、実機検証結果に影響しません。
+
+Experimentは、固定ヘッダー、常時表示の主要操作、縦スクロール可能なダッシュボード本文、固定の全停止フッターで構成します。狭い画面や高DPIでは灌流条件とIN / OUT計算を縦に並べ、長い安全情報とパスを折り返します。900×600でもマウスホイール、Page Up / Page Down、Home / Endで最下部まで到達できます。
 
 ## Active Config（GUI / CLI / NIS共通）
 
@@ -579,9 +583,9 @@ Main entry points:
 
 ## Development Status
 
-- Release candidate: 0.2.0-beta.1
-- Canonical package version: `pyproject.toml` value `0.2.0b1`
-- Future tag name: `v0.2.0-beta.1` (not created by build scripts)
+- Release candidate: 0.2.0-beta.2
+- Canonical package version: `pyproject.toml` value `0.2.0b2`
+- Future tag name: `v0.2.0-beta.2` (not created by build scripts)
 - Tests: run `python -m pytest -q` to verify the current checkout
 - GUI/CLI one-folder build and NIS wrapper DRY-RUN confirmed
 - Live pump control and actual NIS `Int_ExecProgram` behavior require hardware validation
@@ -593,7 +597,7 @@ Main entry points:
 
 ## Build identity and diagnostics
 
-`pyproject.toml` is the single package-version source. GUI, CLI, commissioning records, reports, build metadata, and artifacts derive the human form `0.2.0-beta.1` from PEP 440 `0.2.0b1`. Frozen builds read `_internal\build_info.json` and never invoke Git at startup. Build metadata is informational and never bypasses preflight or safety checks.
+`pyproject.toml` is the single package-version source. GUI, CLI, commissioning records, reports, build metadata, and artifacts derive the human form `0.2.0-beta.2` from PEP 440 `0.2.0b2`. Frozen builds read `_internal\build_info.json` and never invoke Git at startup. Build metadata is informational and never bypasses preflight or safety checks.
 
 Read-only diagnostics:
 
@@ -607,6 +611,7 @@ The diagnostic ZIP includes sanitized build/config/preflight/runtime/validation 
 
 ## Version History
 
+- 0.2.0-beta.2: Experiment viewport accessibility and complete Japanese/English GUI localization. Control compatibility remains 1.
 - 0.2.0-beta.1: traceable hardware-validation release candidate; commissioning, preflight, dashboard, diagnostics, and reproducible Windows packaging.
 - V3.2 and earlier entries below are historical legacy UI generations, not the current semantic package version.
 - V1: serial command wrapper, config, CLI/GUI, logging.

@@ -53,6 +53,7 @@ from .diagnostics import export_diagnostics
 from .gui_commissioning import CommissioningFrame
 from .gui_history import RunHistoryFrame
 from .gui_recipe import RecipeBuilderFrame
+from .i18n import LANGUAGE_PREFERENCES, Localizer
 from .preflight import assess_preflight
 from .profiles import calculate, calculate_profile, result_to_dict, ul_per_mm_from_inner_diameter
 from .ui_theme import ScrollableFrame, apply_theme, create_card, status_badge
@@ -75,7 +76,12 @@ def merge_port_candidates(*groups: list[str] | tuple[str, ...]) -> list[str]:
 class A4PumpApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title(APP_NAME)
+        initial_settings = load_user_settings()
+        initial_ui = initial_settings.get("ui_preferences", {})
+        if not isinstance(initial_ui, dict):
+            initial_ui = {}
+        self.localizer = Localizer(str(initial_ui.get("language", "auto")))
+        self.title(self.t("app.title"))
         self.geometry("1180x760")
         self.minsize(860, 560)
         self.style = apply_theme(self)
@@ -139,9 +145,9 @@ class A4PumpApp(tk.Tk):
         self.profile_in_var = tk.StringVar(value="fast30_1ml")
         self.profile_out_var = tk.StringVar(value="drain30_1ml")
         self.out_delay_var = tk.StringVar(value="0.5")
-        ui = load_user_settings().get("ui_preferences", {})
-        if not isinstance(ui, dict):
-            ui = {}
+        ui = initial_ui
+        self.language_preference_var = tk.StringVar(value=self.localizer.preference)
+        self.language_display_var = tk.StringVar(value=self.localizer.language_choice(self.localizer.preference))
         self.flow_slider_min = float(ui.get("flow_slider_min", 0.1))
         self.flow_slider_max = float(ui.get("flow_slider_max", 3.0))
         self.flow_slider_step = float(ui.get("flow_slider_step", 0.1))
@@ -164,11 +170,12 @@ class A4PumpApp(tk.Tk):
         self.independent_out_flow_var = tk.StringVar(value="2.0")
         self.in_to_out_delay_var = tk.StringVar(value="0.5")
         self.requested_start_delay_var = tk.StringVar(value="0")
-        self.perfusion_preview_var = tk.StringVar(value="Enter a valid setpoint.")
+        self.perfusion_preview_var = tk.StringVar(value=self.t("status.enter_setpoint"))
         self.perfusion_state_var = tk.StringVar(value="DIRTY")
+        self._operational_state = "DIRTY"
         self.programmed_message_var = tk.StringVar(value="")
         self.runtime_detail_var = tk.StringVar(value="")
-        self.port_scan_status_var = tk.StringVar(value="Ports not scanned")
+        self.port_scan_status_var = tk.StringVar(value=self.t("status.ports_not_scanned"))
         self.in_port_metadata_var = tk.StringVar(value="")
         self.out_port_metadata_var = tk.StringVar(value="")
         self.page_title_var = tk.StringVar(value="Dashboard")
@@ -179,6 +186,8 @@ class A4PumpApp(tk.Tk):
         self._logo_image: tk.PhotoImage | None = None
 
         self._build()
+        self.localizer.bind_literal_tree(self)
+        self._refresh_localized_display_values()
         for variable in (
             self.port_vars["IN"],
             self.port_vars["OUT"],
@@ -216,7 +225,56 @@ class A4PumpApp(tk.Tk):
         self.schedule_perfusion_preview()
         self._ui_queue_after_id = self.after(25, self._drain_ui_queue)
         self.after(50, self.scan_ports_async)
-        self._state_poll_after_id = self.after(400, self.poll_runtime_state)
+        self._state_poll_after_id = self.after(800, self.poll_runtime_state)
+
+    def t(self, key: str, **parameters: Any) -> str:
+        return self.localizer.t(key, **parameters)
+
+    def localized_build_identity(self, info: dict[str, Any] | None = None) -> str:
+        value = info or get_build_info()
+        cleanliness_key = (
+            "build.dirty_development"
+            if value.get("git_dirty") is True
+            else "build.clean_release"
+            if value.get("git_dirty") is False and value.get("build_type") == "release-candidate"
+            else "build.clean"
+            if value.get("git_dirty") is False
+            else "build.cleanliness_unknown"
+        )
+        checksum = value.get("artifact_sha256") or value.get("build_identity_fingerprint") or "—"
+        return "\n".join(
+            (
+                f"A4PumpControl {value.get('human_version', APP_VERSION)}",
+                f"{self.t('build.commit')}: {value.get('git_commit_short') or '—'}",
+                self.t(cleanliness_key),
+                f"{self.t('build.control_compatibility')}: "
+                f"{value.get('control_compatibility_version', '')}",
+                f"{self.t('build.fingerprint')}: {checksum}",
+            )
+        )
+
+    def show_error(self, title: str, message: str, **options: Any) -> str:
+        return messagebox.showerror(
+            self.localizer.translate_literal(title),
+            self.localizer.translate_literal(message),
+            **options,
+        )
+
+    def ask_yes_no(self, title: str, message: str, **options: Any) -> bool:
+        return bool(
+            messagebox.askyesno(
+                self.localizer.translate_literal(title),
+                self.localizer.translate_literal(message),
+                **options,
+            )
+        )
+
+    def ask_yes_no_cancel(self, title: str, message: str, **options: Any) -> bool | None:
+        return messagebox.askyesnocancel(
+            self.localizer.translate_literal(title),
+            self.localizer.translate_literal(message),
+            **options,
+        )
 
     def ensure_gui_pump_defaults(self) -> None:
         if "IN" not in self.data["pumps"]:
@@ -244,6 +302,7 @@ class A4PumpApp(tk.Tk):
         self.data["pumps"]["OUT"].setdefault("commands", DEFAULT_COMMANDS.copy())
 
     def _build(self) -> None:
+        self.columnconfigure(0, minsize=180)
         self.columnconfigure(1, weight=1)
         self.rowconfigure(0, weight=1)
 
@@ -259,11 +318,13 @@ class A4PumpApp(tk.Tk):
         header = ttk.Frame(content, style="Page.TFrame")
         header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, textvariable=self.page_title_var, style="PageTitle.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(header, textvariable=self.page_subtitle_var, style="PageSubtitle.TLabel").grid(
-            row=1, column=0, sticky="w", pady=(2, 0)
-        )
-        self.dry_run_badge = status_badge(header, "DRY-RUN", "dryrun")
+        title_label = ttk.Label(header, textvariable=self.page_title_var, style="PageTitle.TLabel")
+        title_label._responsive_wrap_margin = 120  # type: ignore[attr-defined]
+        title_label.grid(row=0, column=0, sticky="ew")
+        subtitle_label = ttk.Label(header, textvariable=self.page_subtitle_var, style="PageSubtitle.TLabel")
+        subtitle_label._responsive_wrap_margin = 120  # type: ignore[attr-defined]
+        subtitle_label.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+        self.dry_run_badge = status_badge(header, self.t("label.dry_run"), "dryrun")
         self.dry_run_badge.grid(row=0, column=1, sticky="e")
 
         self.notebook = ttk.Notebook(content, style="Hidden.TNotebook")
@@ -302,7 +363,7 @@ class A4PumpApp(tk.Tk):
         ttk.Label(status, textvariable=self.status_var, style="Card.TLabel").grid(row=0, column=0, sticky="w")
         self.global_stop_button = ttk.Button(
             status,
-            text="STOP ALL (Esc)",
+            text=self.t("action.stop_all_esc"),
             style="Danger.TButton",
             takefocus=False,
             command=self.gui_stop_all_now,
@@ -317,14 +378,14 @@ class A4PumpApp(tk.Tk):
         self.sidebar_version_label = ttk.Label(parent, text=APP_VERSION, style="Subtitle.TLabel")
         self.sidebar_version_label.grid(row=1, column=0, sticky="w", pady=(0, 16))
         items = [
-            ("experiment", "Experiment"),
-            ("setup", "Setup"),
-            ("advanced", "Advanced"),
+            ("experiment", "nav.experiment"),
+            ("setup", "nav.setup"),
+            ("advanced", "nav.advanced"),
         ]
-        for row, (key, text) in enumerate(items, start=2):
+        for row, (key, text_key) in enumerate(items, start=2):
             button = ttk.Button(
                 parent,
-                text=text,
+                text=self.t(text_key),
                 style="Nav.TButton",
                 takefocus=False,
                 command=lambda page=key: self.select_page(page),
@@ -347,31 +408,42 @@ class A4PumpApp(tk.Tk):
         ttk.Label(parent, textvariable=self.connection_summary_var, style="Subtitle.TLabel", justify="left").grid(
             row=21, column=0, sticky="w"
         )
+        self.sidebar_language_combo = ttk.Combobox(
+            parent,
+            textvariable=self.language_display_var,
+            values=tuple(self.localizer.language_choice(value) for value in LANGUAGE_PREFERENCES),
+            state="readonly",
+            width=16,
+        )
+        self.sidebar_language_combo.grid(row=22, column=0, sticky="ew", pady=(12, 0))
+        self.sidebar_language_combo.bind("<<ComboboxSelected>>", self._on_language_selected, add="+")
         ttk.Button(
             parent,
-            text="About / Diagnostics",
+            text=self.t("nav.about"),
             style="Secondary.TButton",
             command=self.show_about_dialog,
-        ).grid(row=22, column=0, sticky="ew", pady=(14, 0))
+        ).grid(row=23, column=0, sticky="ew", pady=(8, 0))
 
     def select_page(self, page: str) -> None:
         if page not in self.pages:
             return
+        self.current_page = page
         self.notebook.select(self.pages[page])
         titles = {
-            "experiment": ("Experiment", "Shared config · write profiles · start · stop"),
-            "setup": ("Setup", "Active Config, ports, connection tests, and manual control"),
-            "advanced": ("Advanced", "Profiles, calculator, and recipes"),
-            "dashboard": ("Experiment", "Shared config · write profiles · start · stop"),
-            "pumps": ("Setup", "Active Config, ports, connection tests, and manual control"),
-            "run": ("Experiment", "Shared config · write profiles · start · stop"),
-            "profiles": ("Profiles", "Preview and write A4 speed/time settings"),
-            "calculator": ("Calculator", "Calculate volume, speed, time, and write settings"),
-            "recipes": ("Recipes", "Build and run repeatable V2 recipes"),
+            "experiment": ("page.experiment.title", "page.experiment.subtitle"),
+            "setup": ("page.setup.title", "page.setup.subtitle"),
+            "advanced": ("page.advanced.title", "page.advanced.subtitle"),
+            "dashboard": ("page.experiment.title", "page.experiment.subtitle"),
+            "pumps": ("page.setup.title", "page.setup.subtitle"),
+            "run": ("page.experiment.title", "page.experiment.subtitle"),
+            "profiles": ("nav.profiles", "page.advanced.subtitle"),
+            "calculator": ("nav.calculator", "page.advanced.subtitle"),
+            "recipes": ("nav.recipes", "page.advanced.subtitle"),
         }
-        title, subtitle = titles[page]
+        title_key, subtitle_key = titles[page]
+        title = self.t(title_key)
         self.page_title_var.set(title)
-        self.page_subtitle_var.set(subtitle)
+        self.page_subtitle_var.set(self.t(subtitle_key))
         selected_main = {
             "dashboard": "experiment",
             "run": "experiment",
@@ -385,7 +457,7 @@ class A4PumpApp(tk.Tk):
             button.configure(style="NavSelected.TButton" if key == selected_main else "Nav.TButton")
         if page in {"profiles", "calculator", "recipes"} and hasattr(self, "advanced_notebook"):
             self.advanced_notebook.select({"profiles": 0, "calculator": 1, "recipes": 2}[page])
-        self.set_status(f"Ready - {title}")
+        self.set_status(f"{self.t('status.ready')} - {title}")
 
     def set_status(self, message: str) -> None:
         if threading.current_thread() is not threading.main_thread():
@@ -394,18 +466,18 @@ class A4PumpApp(tk.Tk):
         self.status_var.set(message)
         if hasattr(self, "dry_run_badge"):
             if self.dry_run_var.get():
-                self.dry_run_badge.configure(text="DRY-RUN", style="BadgeDryRun.TLabel")
+                self.dry_run_badge.configure(text=self.t("label.dry_run"), style="BadgeDryRun.TLabel")
             else:
-                self.dry_run_badge.configure(text="LIVE", style="BadgeEnabled.TLabel")
+                self.dry_run_badge.configure(text=self.t("label.live"), style="BadgeEnabled.TLabel")
         if hasattr(self, "connection_summary_var"):
-            dry = "ON" if self.dry_run_var.get() else "OFF"
-            out = "enabled" if self.is_pump_enabled("OUT") else "disabled"
-            self.connection_summary_var.set(f"IN: {self.port_vars['IN'].get()}\nOUT: {out}\nDry-run: {dry}")
+            dry = self.t("label.dry_run") if self.dry_run_var.get() else self.t("label.live")
+            out = self.port_vars["OUT"].get() if self.is_pump_enabled("OUT") else self.t("label.disabled")
+            self.connection_summary_var.set(f"IN: {self.port_vars['IN'].get()}\nOUT: {out}\n{dry}")
         if hasattr(self, "experiment_pumps_var"):
-            out = self.port_vars["OUT"].get() if self.is_pump_enabled("OUT") else "disabled"
+            out = self.port_vars["OUT"].get() if self.is_pump_enabled("OUT") else self.t("label.disabled")
             self.experiment_pumps_var.set(
                 f"IN: {self.port_vars['IN'].get()}    OUT: {out}    "
-                f"{'DRY-RUN' if self.dry_run_var.get() else 'LIVE'}"
+                f"{self.t('label.dry_run') if self.dry_run_var.get() else self.t('label.live')}"
             )
 
     @property
@@ -500,57 +572,25 @@ class A4PumpApp(tk.Tk):
 
     def _build_experiment_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
-        parent.columnconfigure(1, weight=1)
-        parent.rowconfigure(3, weight=1)
+        parent.rowconfigure(1, weight=1)
+        self._experiment_layout_job: str | None = None
 
-        shared = create_card(parent, "Armed perfusion", "GUI / CLI / NIS share this state. Device settings are not read back.")
-        shared.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-        shared.columnconfigure(1, weight=1)
-        self.experiment_config_var = tk.StringVar(value="")
-        ttk.Label(shared, text="State", style="Card.TLabel").grid(row=2, column=0, sticky="w")
-        self.perfusion_state_label = ttk.Label(shared, textvariable=self.perfusion_state_var, style="Value.TLabel")
-        self.perfusion_state_label.grid(row=2, column=1, sticky="w", padx=(8, 16))
-        ttk.Label(shared, textvariable=self.programmed_message_var, style="Value.TLabel").grid(
-            row=2, column=2, sticky="e"
+        actions = create_card(
+            parent,
+            self.t("card.primary_actions"),
+            "Setpoint edits only update preview; they never send UART commands.",
         )
-        self.experiment_pumps_var = tk.StringVar(value="")
-        ttk.Label(shared, textvariable=self.experiment_pumps_var, style="Card.TLabel").grid(
-            row=3, column=0, columnspan=3, sticky="w", pady=(4, 0)
-        )
-        ttk.Label(shared, textvariable=self.experiment_config_var, style="Subtitle.TLabel").grid(
-            row=4, column=0, columnspan=3, sticky="ew", pady=(2, 0)
-        )
-        ttk.Label(shared, textvariable=self.runtime_detail_var, style="Subtitle.TLabel").grid(
-            row=5, column=0, columnspan=3, sticky="ew", pady=(2, 0)
-        )
-        self.dashboard_identity_var = tk.StringVar(value="")
-        self.dashboard_plan_var = tk.StringVar(value="")
-        self.dashboard_safety_var = tk.StringVar(value="")
-        self.dashboard_timing_var = tk.StringVar(value="")
-        ttk.Label(shared, textvariable=self.dashboard_identity_var, style="Card.TLabel").grid(
-            row=6, column=0, columnspan=3, sticky="ew", pady=(2, 0)
-        )
-        ttk.Label(shared, textvariable=self.dashboard_plan_var, style="Card.TLabel").grid(
-            row=7, column=0, columnspan=3, sticky="ew", pady=(2, 0)
-        )
-        ttk.Label(shared, textvariable=self.dashboard_timing_var, style="Subtitle.TLabel").grid(
-            row=8, column=0, columnspan=3, sticky="ew", pady=(2, 0)
-        )
-        ttk.Label(shared, textvariable=self.dashboard_safety_var, style="Value.TLabel").grid(
-            row=9, column=0, columnspan=3, sticky="ew", pady=(2, 0)
-        )
-
-        actions = create_card(parent, "Primary actions", "Setpoint edits only update preview; they never send UART commands.")
-        actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        actions.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.experiment_action_strip = actions
         for column in range(4):
             actions.columnconfigure(column, weight=1)
         self.scan_ports_button = ttk.Button(
-            actions, text="SCAN PORTS", style="Secondary.TButton", command=self.scan_ports_async
+            actions, text=self.t("action.scan_ports"), style="Secondary.TButton", command=self.scan_ports_async
         )
         self.scan_ports_button.grid(row=2, column=0, sticky="ew", padx=(0, 4), pady=(4, 0))
         self.experiment_write_button = ttk.Button(
             actions,
-            text="PROGRAM / ARM BOTH",
+            text=self.t("action.program_arm"),
             style="Success.TButton",
             takefocus=False,
             command=self.program_arm_gui,
@@ -558,30 +598,90 @@ class A4PumpApp(tk.Tk):
         self.experiment_write_button.grid(row=2, column=1, sticky="ew", padx=4, pady=(4, 0))
         self.experiment_start_button = ttk.Button(
             actions,
-            text="START ARMED",
+            text=self.t("action.start_armed"),
             style="Primary.TButton",
             takefocus=False,
             command=self.start_armed_gui,
         )
         self.experiment_start_button.grid(row=2, column=2, sticky="ew", padx=4, pady=(4, 0))
-        ttk.Button(
+        self.experiment_stop_button = ttk.Button(
             actions,
-            text="STOP ALL",
+            text=self.t("action.stop_all"),
             style="Danger.TButton",
             takefocus=False,
             command=self.gui_stop_all_now,
-        ).grid(row=2, column=3, sticky="ew", padx=(4, 0), pady=(4, 0))
+        )
+        self.experiment_stop_button.grid(row=2, column=3, sticky="ew", padx=(4, 0), pady=(4, 0))
 
-        setpoint = create_card(parent, "Perfusion setpoint", "Numeric IN flow is authoritative; slider range is a UI preference.")
-        setpoint.grid(row=2, column=0, sticky="nsew", padx=(0, 4), pady=(0, 8))
+        self.experiment_scroll = ScrollableFrame(parent, height=430)
+        self.experiment_scroll.grid(row=1, column=0, sticky="nsew")
+        content = self.experiment_scroll.inner
+        content.columnconfigure(0, weight=1)
+        content.columnconfigure(1, weight=1)
+
+        shared = create_card(content, "Armed perfusion", "GUI / CLI / NIS share this state. Device settings are not read back.")
+        shared.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        shared.columnconfigure(0, weight=0)
+        shared.columnconfigure(1, weight=1)
+        shared.columnconfigure(2, weight=0)
+        self.experiment_config_var = tk.StringVar(value="")
+        self.perfusion_state_heading = ttk.Label(shared, text="State", style="Card.TLabel")
+        self.perfusion_state_heading.grid(row=2, column=0, sticky="nw")
+        self.perfusion_state_label = ttk.Label(shared, textvariable=self.perfusion_state_var, style="Value.TLabel")
+        self.perfusion_state_label._responsive_wrap_margin = 32  # type: ignore[attr-defined]
+        self.perfusion_state_label.configure(justify="left", anchor="w")
+        self.perfusion_state_label.grid(row=2, column=1, sticky="ew", padx=(8, 16))
+        self.programmed_message_label = ttk.Label(
+            shared,
+            textvariable=self.programmed_message_var,
+            style="Value.TLabel",
+            justify="left",
+            anchor="w",
+        )
+        self.programmed_message_label._responsive_wrap_margin = 32  # type: ignore[attr-defined]
+        self.programmed_message_label.grid(row=2, column=2, sticky="ew")
+        self.experiment_pumps_var = tk.StringVar(value="")
+        self.dashboard_detail_labels: list[ttk.Label] = []
+        for row, variable, style in (
+            (3, self.experiment_pumps_var, "Card.TLabel"),
+            (4, self.experiment_config_var, "Subtitle.TLabel"),
+            (5, self.runtime_detail_var, "Subtitle.TLabel"),
+        ):
+            label = ttk.Label(shared, textvariable=variable, style=style, justify="left", anchor="w")
+            label._responsive_wrap_margin = 24  # type: ignore[attr-defined]
+            label.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(2, 0))
+            self.dashboard_detail_labels.append(label)
+        self.dashboard_identity_var = tk.StringVar(value="")
+        self.dashboard_plan_var = tk.StringVar(value="")
+        self.dashboard_safety_var = tk.StringVar(value="")
+        self.dashboard_timing_var = tk.StringVar(value="")
+        for row, variable, style in (
+            (6, self.dashboard_identity_var, "Card.TLabel"),
+            (7, self.dashboard_plan_var, "Card.TLabel"),
+            (8, self.dashboard_timing_var, "Subtitle.TLabel"),
+            (9, self.dashboard_safety_var, "Value.TLabel"),
+        ):
+            label = ttk.Label(shared, textvariable=variable, style=style, justify="left", anchor="w")
+            label._responsive_wrap_margin = 24  # type: ignore[attr-defined]
+            label.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(2, 0))
+            self.dashboard_detail_labels.append(label)
+
+        setpoint = create_card(content, self.t("card.perfusion_setpoint"), "Numeric IN flow is authoritative; slider range is a UI preference.")
+        setpoint.grid(row=1, column=0, sticky="nsew", padx=(0, 4), pady=(0, 8))
+        self.experiment_setpoint_card = setpoint
         for column in range(4):
             setpoint.columnconfigure(column, weight=1)
         self.perfusion_mode_combo = ttk.Combobox(
             setpoint,
             textvariable=self.perfusion_mode_var,
-            values=("fixed_volume", "fixed_duration", "bounded_continuous"),
+            values=(),
             state="readonly",
         )
+        self.perfusion_mode_display_var = tk.StringVar(
+            value=self.localizer.display_value(self.perfusion_mode_var.get())
+        )
+        self.perfusion_mode_combo.configure(textvariable=self.perfusion_mode_display_var)
+        self.perfusion_mode_combo.bind("<<ComboboxSelected>>", self._on_perfusion_mode_display_selected, add="+")
         ttk.Label(setpoint, text="Mode", style="Card.TLabel").grid(row=2, column=0, sticky="w")
         self.perfusion_mode_combo.grid(row=2, column=1, columnspan=3, sticky="ew")
         ttk.Label(setpoint, text="IN flow mL/min", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=2)
@@ -624,8 +724,10 @@ class A4PumpApp(tk.Tk):
             entry.grid(row=row, column=2, columnspan=2, sticky="ew", pady=1)
             self.bound_entries.append(entry)
 
-        pair = create_card(parent, "IN / OUT calculation", "IN is forward; OUT is reverse. Unequal flow can change dish volume.")
-        pair.grid(row=2, column=1, sticky="nsew", padx=(4, 0), pady=(0, 8))
+        pair = create_card(content, self.t("card.in_out_calculation"), "IN is forward; OUT is reverse. Unequal flow can change dish volume.")
+        pair.grid(row=1, column=1, sticky="nsew", padx=(4, 0), pady=(0, 8))
+        self.experiment_pair_card = pair
+        pair.columnconfigure(0, weight=0)
         pair.columnconfigure(1, weight=1)
         syringe_values = tuple(self.data["syringes"])
         self.in_syringe_combo = ttk.Combobox(pair, textvariable=self.in_syringe_var, values=syringe_values, state="readonly")
@@ -665,8 +767,9 @@ class A4PumpApp(tk.Tk):
             row=10, column=0, columnspan=2, sticky="w", pady=(2, 0)
         )
 
-        preview = create_card(parent, "Quantized preview", "PROGRAMMED — NOT READ BACK after successful LIVE programming.")
-        preview.grid(row=3, column=0, columnspan=2, sticky="nsew")
+        preview = create_card(content, self.t("card.quantized_preview"), "PROGRAMMED — NOT READ BACK after successful LIVE programming.")
+        preview.grid(row=2, column=0, columnspan=2, sticky="nsew")
+        self.experiment_preview_card = preview
         preview.columnconfigure(0, weight=1)
         ttk.Label(
             preview,
@@ -674,7 +777,7 @@ class A4PumpApp(tk.Tk):
             style="Card.TLabel",
             justify="left",
             font=("Consolas", 9),
-        ).grid(row=2, column=0, sticky="nw")
+        ).grid(row=2, column=0, sticky="ew")
         self.run_log = tk.Text(preview, height=2, wrap="word", font=("Consolas", 8))
         self.run_log.grid(row=3, column=0, sticky="ew", pady=(4, 0))
         self.setpoint_widgets = [
@@ -684,11 +787,161 @@ class A4PumpApp(tk.Tk):
             self.requested_start_delay_entry,
         ]
         # Compatibility handles for the legacy profile workflow now located in Advanced.
-        self.run_mode_combo = ttk.Combobox(parent, textvariable=self.run_mode_var, values=RUN_MODES, state="readonly")
-        self.profile_in_combo = ttk.Combobox(parent, textvariable=self.profile_in_var, values=tuple(self.data["profiles"]), state="readonly")
-        self.profile_out_combo = ttk.Combobox(parent, textvariable=self.profile_out_var, values=tuple(self.data["profiles"]), state="readonly")
-        self.out_delay_entry = ttk.Entry(parent, textvariable=self.out_delay_var)
+        self.run_mode_combo = ttk.Combobox(content, textvariable=self.run_mode_var, values=RUN_MODES, state="readonly")
+        self.profile_in_combo = ttk.Combobox(content, textvariable=self.profile_in_var, values=tuple(self.data["profiles"]), state="readonly")
+        self.profile_out_combo = ttk.Combobox(content, textvariable=self.profile_out_var, values=tuple(self.data["profiles"]), state="readonly")
+        self.out_delay_entry = ttk.Entry(content, textvariable=self.out_delay_var)
+        self.experiment_scroll.canvas.bind("<Configure>", self._schedule_experiment_layout, add="+")
+        self.after_idle(self._apply_experiment_layout)
         self.update_ratio_widgets()
+
+    def _schedule_experiment_layout(self, _event: tk.Event[Any] | None = None) -> None:
+        if self._experiment_layout_job is not None:
+            try:
+                self.after_cancel(self._experiment_layout_job)
+            except tk.TclError:
+                pass
+        self._experiment_layout_job = self.after(70, self._apply_experiment_layout)
+
+    def _apply_experiment_layout(self) -> None:
+        self._experiment_layout_job = None
+        width = max(1, self.experiment_scroll.canvas.winfo_width())
+        wide = width >= 760
+        content = self.experiment_scroll.inner
+        self.experiment_setpoint_card.grid_forget()
+        self.experiment_pair_card.grid_forget()
+        self.experiment_preview_card.grid_forget()
+        if wide:
+            content.columnconfigure(0, weight=1, uniform="experiment")
+            content.columnconfigure(1, weight=1, uniform="experiment")
+            self.experiment_setpoint_card.grid(row=1, column=0, sticky="nsew", padx=(0, 4), pady=(0, 8))
+            self.experiment_pair_card.grid(row=1, column=1, sticky="nsew", padx=(4, 0), pady=(0, 8))
+            self.experiment_preview_card.grid(row=2, column=0, columnspan=2, sticky="nsew")
+            self.experiment_layout_mode = "wide"
+            self.perfusion_state_heading.grid(row=2, column=0, sticky="nw")
+            self.perfusion_state_label.grid(row=2, column=1, sticky="ew", padx=(8, 16))
+            self.programmed_message_label.grid(row=2, column=2, sticky="ew")
+            for row, label in enumerate(self.dashboard_detail_labels, start=3):
+                label.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(2, 0))
+        else:
+            content.columnconfigure(0, weight=1, uniform="")
+            content.columnconfigure(1, weight=0, uniform="")
+            self.experiment_setpoint_card.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(0, 8))
+            self.experiment_pair_card.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(0, 8))
+            self.experiment_preview_card.grid(row=3, column=0, columnspan=2, sticky="nsew")
+            self.experiment_layout_mode = "narrow"
+            self.perfusion_state_heading.grid(row=2, column=0, sticky="nw")
+            self.perfusion_state_label.grid(row=2, column=1, columnspan=2, sticky="ew", padx=(8, 0))
+            self.programmed_message_label.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(2, 0))
+            for row, label in enumerate(self.dashboard_detail_labels, start=4):
+                label.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(2, 0))
+
+        buttons = (
+            self.scan_ports_button,
+            self.experiment_write_button,
+            self.experiment_start_button,
+            self.experiment_stop_button,
+        )
+        for button in buttons:
+            button.grid_forget()
+        action_width = max(1, self.experiment_action_strip.winfo_width())
+        if action_width >= 720:
+            for column, button in enumerate(buttons):
+                button.grid(row=2, column=column, sticky="ew", padx=(0 if column == 0 else 4, 0), pady=(4, 0))
+            self.experiment_action_layout = "single-row"
+        else:
+            for index, button in enumerate(buttons):
+                button.grid(
+                    row=2 + index // 2,
+                    column=(index % 2) * 2,
+                    columnspan=2,
+                    sticky="ew",
+                    padx=(0 if index % 2 == 0 else 4, 4 if index % 2 == 0 else 0),
+                    pady=(4, 0),
+                )
+            self.experiment_action_layout = "two-row"
+        self.experiment_scroll.canvas.configure(scrollregion=self.experiment_scroll.canvas.bbox("all"))
+
+    def _on_perfusion_mode_display_selected(self, _event: tk.Event[Any] | None = None) -> None:
+        canonical = self.localizer.canonical_value(
+            self.perfusion_mode_display_var.get(),
+            ("fixed_volume", "fixed_duration", "bounded_continuous"),
+        )
+        if canonical is not None:
+            self.perfusion_mode_var.set(canonical)
+
+    def _on_language_selected(self, _event: tk.Event[Any] | None = None) -> None:
+        preference = self.localizer.language_preference_from_display(self.language_display_var.get())
+        if preference is None:
+            return
+        self.set_language_preference(preference)
+
+    def set_language_preference(self, preference: str, *, locale_name: str | None = None) -> None:
+        canonical = preference if preference in LANGUAGE_PREFERENCES else "auto"
+        self.language_preference_var.set(canonical)
+        self.localizer.set_preference(canonical, locale_name=locale_name)
+        persist_ui_preferences({"language": canonical})
+        self._refresh_localized_display_values()
+
+    def _refresh_localized_display_values(self) -> None:
+        self.title(self.t("app.title"))
+        self.language_display_var.set(self.localizer.language_choice(self.localizer.preference))
+        language_values = tuple(self.localizer.language_choice(value) for value in LANGUAGE_PREFERENCES)
+        for name in ("sidebar_language_combo", "setup_language_combo"):
+            combo = getattr(self, name, None)
+            if combo is not None:
+                combo.configure(values=language_values)
+        if hasattr(self, "perfusion_mode_combo"):
+            modes = ("fixed_volume", "fixed_duration", "bounded_continuous")
+            self.perfusion_mode_combo.configure(values=tuple(self.localizer.display_value(value) for value in modes))
+            self.perfusion_mode_display_var.set(self.localizer.display_value(self.perfusion_mode_var.get()))
+        if hasattr(self, "global_stop_button"):
+            self.global_stop_button.configure(text=self.t("action.stop_all_esc"))
+        for key, label_key in (
+            ("experiment", "nav.experiment"),
+            ("setup", "nav.setup"),
+            ("advanced", "nav.advanced"),
+        ):
+            button = self.nav_buttons.get(key)
+            if button is not None:
+                button.configure(text=self.t(label_key))
+        if hasattr(self, "setup_notebook"):
+            self.setup_notebook.tab(0, text=self.t("nav.hardware"))
+            self.setup_notebook.tab(1, text=self.t("nav.commissioning"))
+        if hasattr(self, "advanced_notebook"):
+            for index, key in enumerate(("nav.profiles", "nav.calculator", "nav.recipes", "nav.history")):
+                self.advanced_notebook.tab(index, text=self.t(key))
+        for child in (
+            getattr(self, "recipe_tab", None),
+            getattr(self, "history_tab", None),
+            getattr(self, "commissioning_tab", None),
+        ):
+            refresh_language = getattr(child, "refresh_language", None)
+            if callable(refresh_language):
+                refresh_language()
+        self.localizer.refresh_bindings()
+        self.localizer.bind_literal_tree(self)
+        self.perfusion_state_var.set(self.localizer.state_label(self._operational_state))
+        current_page = getattr(self, "current_page", "experiment")
+        self.select_page(current_page)
+        self.set_status(self.t("status.ready"))
+        if hasattr(self, "perfusion_preview_var"):
+            if self._preview_after_id is not None:
+                try:
+                    self.after_cancel(self._preview_after_id)
+                except tk.TclError:
+                    pass
+                self._preview_after_id = None
+            self.update_perfusion_preview()
+        status = getattr(self, "_last_runtime_status", None)
+        if isinstance(status, dict):
+            self.update_experiment_dashboard(status)
+        about = getattr(self, "_about_dialog", None)
+        if about is not None and about.winfo_exists():
+            about.destroy()
+            self._about_dialog = None
+            self.show_about_dialog()
+        self._schedule_experiment_layout()
 
     def _build_setup_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
@@ -735,10 +988,12 @@ class A4PumpApp(tk.Tk):
             return existing
         self.commissioning_placeholder.destroy()
         commissioning_scroll = ScrollableFrame(self.commissioning_page, height=460)
+        self.commissioning_scroll = commissioning_scroll
         commissioning_scroll.grid(row=0, column=0, sticky="nsew")
         commissioning_scroll.inner.columnconfigure(0, weight=1)
         self.commissioning_tab = CommissioningFrame(commissioning_scroll.inner, self)
         self.commissioning_tab.grid(row=0, column=0, sticky="ew")
+        self.localizer.bind_literal_tree(self.commissioning_tab)
         return self.commissioning_tab
 
     def _build_advanced_tab(self, parent: ttk.Frame) -> None:
@@ -749,6 +1004,8 @@ class A4PumpApp(tk.Tk):
 
         profile_scroll = ScrollableFrame(self.advanced_notebook, height=430)
         calc_scroll = ScrollableFrame(self.advanced_notebook, height=430)
+        self.profile_scroll = profile_scroll
+        self.calculator_scroll = calc_scroll
         self.recipe_tab = RecipeBuilderFrame(self.advanced_notebook, self)
         self.history_tab = RunHistoryFrame(self.advanced_notebook, self)
         self.advanced_notebook.add(profile_scroll, text="Profiles")
@@ -782,8 +1039,20 @@ class A4PumpApp(tk.Tk):
             entry = ttk.Entry(card, textvariable=variable, state="readonly")
             entry.grid(row=row, column=1, sticky="ew", pady=2)
 
+        ttk.Label(card, text=self.t("label.language"), style="Card.TLabel").grid(
+            row=8, column=0, sticky="w", padx=(0, 8), pady=(8, 2)
+        )
+        self.setup_language_combo = ttk.Combobox(
+            card,
+            textvariable=self.language_display_var,
+            values=tuple(self.localizer.language_choice(value) for value in LANGUAGE_PREFERENCES),
+            state="readonly",
+        )
+        self.setup_language_combo.grid(row=8, column=1, sticky="ew", pady=(8, 2))
+        self.setup_language_combo.bind("<<ComboboxSelected>>", self._on_language_selected, add="+")
+
         settings = ttk.Frame(card, style="Card.TFrame")
-        settings.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(8, 2))
+        settings.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(8, 2))
         for column in range(6):
             settings.columnconfigure(column, weight=1)
         for column, (label, variable, values) in enumerate(
@@ -1201,7 +1470,7 @@ class A4PumpApp(tk.Tk):
         if getattr(self, "_port_scan_running", False):
             return
         self._port_scan_running = True
-        self.port_scan_status_var.set("Scanning serial ports…")
+        self.port_scan_status_var.set(self.t("status.scanning_ports"))
         if hasattr(self, "scan_ports_button"):
             self.scan_ports_button.configure(state="disabled")
 
@@ -1219,7 +1488,7 @@ class A4PumpApp(tk.Tk):
         if hasattr(self, "scan_ports_button"):
             self.scan_ports_button.configure(state="normal")
         if error:
-            self.port_scan_status_var.set(f"Scan failed: {error}")
+            self.port_scan_status_var.set(self.t("status.scan_failed", error=error))
             self.set_status(f"Port scan failed: {error}")
             return
         self.detected_ports = ports
@@ -1232,7 +1501,7 @@ class A4PumpApp(tk.Tk):
         self.in_port_combo.configure(values=values)
         self.out_port_combo.configure(values=values)
         timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
-        self.port_scan_status_var.set(f"Last scan: {timestamp} · {len(ports)} device(s)")
+        self.port_scan_status_var.set(self.t("status.last_scan", timestamp=timestamp, count=len(ports)))
         self.update_selected_port_metadata()
         if hasattr(self, "pump_log"):
             self.append_log(self.pump_log, f"Ports: {', '.join(values) or '(none)'}")
@@ -1243,9 +1512,9 @@ class A4PumpApp(tk.Tk):
             device = self.port_vars[key].get().strip()
             port = by_device.get(device.casefold())
             if not device:
-                text = "No port selected"
+                text = self.t("status.no_port_selected")
             elif port is None:
-                text = f"{device}: NOT DETECTED"
+                text = self.t("status.port_not_detected", device=device)
             else:
                 metadata = [
                     str(port.get("description", "")).strip(),
@@ -1253,7 +1522,11 @@ class A4PumpApp(tk.Tk):
                     str(port.get("product", "")).strip(),
                     f"HWID {port.get('hwid')}" if port.get("hwid") else "",
                 ]
-                text = f"{device}: DETECTED · " + " · ".join(item for item in metadata if item)
+                text = self.t(
+                    "status.port_detected",
+                    device=device,
+                    metadata=" · ".join(item for item in metadata if item),
+                )
             variable.set(text)
 
     def _on_perfusion_input_changed(self, *_args: Any) -> None:
@@ -1310,24 +1583,47 @@ class A4PumpApp(tk.Tk):
             outside = ""
             flow = float(self.in_flow_var.get())
             if not self.flow_slider_min <= flow <= self.flow_slider_max:
-                outside = f" · OUTSIDE SLIDER RANGE {self.flow_slider_min:g}-{self.flow_slider_max:g}"
+                outside = " · " + self.t(
+                    "preview.outside_slider",
+                    minimum=f"{self.flow_slider_min:g}",
+                    maximum=f"{self.flow_slider_max:g}",
+                )
             else:
                 self.flow_slider_var.set(flow)
             self.perfusion_preview_var.set(
-                f"IN  req {in_set.requested_flow_ml_min:.4f} mL/min → "
-                f"{in_set.programmed_speed_mm_min:.2f} mm/min → actual {in_set.estimated_actual_flow_ml_min:.4f}; "
-                f"{in_set.expected_volume_ml:.4f} mL\n"
-                f"OUT req {out_set.requested_flow_ml_min:.4f} mL/min → "
-                f"{out_set.programmed_speed_mm_min:.2f} mm/min → actual {out_set.estimated_actual_flow_ml_min:.4f}; "
-                f"{out_set.expected_volume_ml:.4f} mL\n"
-                f"Duration {result.programmed_duration_s}s · ratio {result.out_in_ratio:.3f} · "
-                f"start delay {result.requested_start_delay_s:.1f}s · IN→OUT {result.in_to_out_delay_s:.3f}s{outside}\n"
+                self.t(
+                    "preview.pump_line",
+                    role="IN",
+                    requested=in_set.requested_flow_ml_min,
+                    speed=in_set.programmed_speed_mm_min,
+                    actual=in_set.estimated_actual_flow_ml_min,
+                    volume=in_set.expected_volume_ml,
+                )
+                + "\n"
+                + self.t(
+                    "preview.pump_line",
+                    role="OUT",
+                    requested=out_set.requested_flow_ml_min,
+                    speed=out_set.programmed_speed_mm_min,
+                    actual=out_set.estimated_actual_flow_ml_min,
+                    volume=out_set.expected_volume_ml,
+                )
+                + "\n"
+                + self.t(
+                    "preview.timing",
+                    duration=result.programmed_duration_s,
+                    ratio=result.out_in_ratio,
+                    start_delay=result.requested_start_delay_s,
+                    out_delay=result.in_to_out_delay_s,
+                    outside=outside,
+                )
+                + "\n"
                 f"IN UART: {' '.join(in_set.uart_commands)}\nOUT UART: {' '.join(out_set.uart_commands)}"
             )
         except Exception as exc:
             self.current_perfusion_setpoint = None
-            self.perfusion_preview_var.set(f"INVALID SETPOINT: {exc}")
-        self.update_runtime_controls(self.perfusion_state_var.get())
+            self.perfusion_preview_var.set(self.t("preview.invalid", error=exc))
+        self.update_runtime_controls(self._operational_state)
 
     def on_flow_slider(self, value: str) -> None:
         # Slider is preview-only. It only updates the authoritative numeric entry.
@@ -1424,10 +1720,13 @@ class A4PumpApp(tk.Tk):
             self.set_status(f"Another operation is running: {self._active_operation}")
             return
         if self.dry_run_var.get():
-            messagebox.showerror("START refused", "Switch to LIVE and create an ARMED plan first.")
+            self.show_error(
+                self.t("dialog.start_refused"),
+                self.t("dialog.switch_live_arm"),
+            )
             return
         if get_arm_status(self.config_resolution).get("state") != "ARMED":
-            messagebox.showerror("START refused", "The shared perfusion state is not ARMED.")
+            self.show_error(self.t("dialog.start_refused"), self.t("dialog.not_armed"))
             return
         if not self._confirm_live_start_preflight():
             return
@@ -1441,7 +1740,7 @@ class A4PumpApp(tk.Tk):
             if delay_s < 0:
                 raise ValueError("GUI START delay must be zero or positive")
         except ValueError as exc:
-            messagebox.showerror("START refused", str(exc))
+            self.show_error(self.t("dialog.start_refused"), str(exc))
             return
         operation_name = "schedule" if delay_s > 0 else "start"
         if not self.begin_gui_operation(operation_name):
@@ -1510,6 +1809,7 @@ class A4PumpApp(tk.Tk):
                 self.runtime_detail_var.set(
                     f"Run {status.get('run_id', '')}" if status.get("run_id") else ""
                 )
+            self._last_runtime_status = status
             self.update_experiment_dashboard(status)
         except Exception as exc:
             self.set_status(f"Runtime state poll failed: {exc}")
@@ -1523,15 +1823,15 @@ class A4PumpApp(tk.Tk):
         detected = {str(item.get("device", "")).casefold() for item in self.detected_ports}
         in_port = self.port_vars["IN"].get()
         out_port = self.port_vars["OUT"].get()
-        in_detected = "detected" if in_port.casefold() in detected else "not detected"
+        in_detected = self.t("status.detected") if in_port.casefold() in detected else self.t("status.not_detected")
         out_detected = (
-            "disabled"
+            self.t("label.disabled")
             if not self.out_enabled_var.get()
-            else "detected" if out_port.casefold() in detected else "not detected"
+            else self.t("status.detected") if out_port.casefold() in detected else self.t("status.not_detected")
         )
         self.dashboard_identity_var.set(
-            f"IN {in_port or '(missing)'} ({in_detected}) · "
-            f"OUT {out_port or '(missing)'} ({out_detected})"
+            f"IN {in_port or self.t('status.missing')} ({in_detected}) · "
+            f"OUT {out_port or self.t('status.missing')} ({out_detected})"
         )
         in_plan = pumps.get("IN", {})
         out_plan = pumps.get("OUT", {})
@@ -1543,12 +1843,19 @@ class A4PumpApp(tk.Tk):
         except (TypeError, ValueError, ZeroDivisionError):
             in_flow = self.in_flow_var.get()
             out_flow = self.independent_out_flow_var.get()
+        identity_line = (
+            f"Plan {status.get('plan_id', '') or '—'} · Run {status.get('run_id', '') or '—'}"
+            if self.localizer.language == "en"
+            else f"{self.t('label.plan_id')}: {status.get('plan_id', '') or '—'} · "
+            f"{self.t('label.run_id')}: {status.get('run_id', '') or '—'}"
+        )
         self.dashboard_plan_var.set(
-            f"Plan {status.get('plan_id', '') or '—'} · Run {status.get('run_id', '') or '—'} · "
-            f"IN {in_flow} mL/min · OUT {out_flow} mL/min · ratio {ratio or self.out_ratio_var.get()} · "
-            f"duration {plan.get('programmed_duration_s', '—')} s · "
-            f"expected IN {in_plan.get('expected_volume_ml', '—')} mL · "
-            f"OUT {out_plan.get('expected_volume_ml', '—')} mL"
+            f"{identity_line}\n"
+            f"{self.t('label.in_flow')}: {in_flow} mL/min · {self.t('label.out_flow')}: {out_flow} mL/min · "
+            f"{self.t('label.out_ratio')}: {ratio or self.out_ratio_var.get()}\n"
+            f"{self.t('label.duration')}: {plan.get('programmed_duration_s', '—')} s · "
+            f"{self.t('label.expected_in')}: {in_plan.get('expected_volume_ml', '—')} mL · "
+            f"{self.t('label.expected_out')}: {out_plan.get('expected_volume_ml', '—')} mL"
         )
         now_epoch = datetime.now().astimezone().timestamp()
         pending = status.get("pending") if isinstance(status.get("pending"), dict) else {}
@@ -1558,9 +1865,10 @@ class A4PumpApp(tk.Tk):
         if status.get("expected_end_epoch") is not None:
             remaining = f" · estimated remaining {max(0, int(float(status['expected_end_epoch']) - now_epoch))} s"
         self.dashboard_timing_var.set(
-            f"Scheduled {scheduled or '—'} · software start {status.get('actual_started_at', '—')} · "
-            f"IN→OUT delay {(plan.get('requested') or {}).get('in_to_out_delay_s', '—')} s · "
-            f"expected end {expected_end or '—'}{remaining}"
+            f"{self.t('label.scheduled_start')}: {scheduled or '—'} · "
+            f"{self.t('label.software_start')}: {status.get('actual_started_at', '—')}\n"
+            f"IN→OUT: {(plan.get('requested') or {}).get('in_to_out_delay_s', '—')} s · "
+            f"{self.t('label.expected_end')}: {expected_end or '—'}{remaining}"
         )
         validation = self.validation_store.status(
             data=self.data,
@@ -1573,12 +1881,13 @@ class A4PumpApp(tk.Tk):
             dry_run=self.dry_run_var.get(),
         )
         self.dashboard_safety_var.set(
-            f"Commissioning: {validation['status']} "
-            f"(last {validation['last_completed_at'] or 'not completed'}) · "
-            f"Preflight: {preflight['summary']} "
-            f"({preflight['counts']['BLOCK']} BLOCK, {preflight['counts']['WARN']} WARN) · "
-            f"Last fault: {fault.get('error', 'none')} · STOP: "
-            f"{'in progress' if self._stop_in_flight else status.get('state', 'ready')}"
+            f"{self.t('label.commissioning')}: {self.localizer.display_value(validation['status'])} "
+            f"({validation['last_completed_at'] or self.t('status.commissioning_incomplete')})\n"
+            f"{self.t('label.preflight')}: "
+            f"{self.t('status.preflight_summary', blocks=preflight['counts']['BLOCK'], warnings=preflight['counts']['WARN'])}\n"
+            f"{self.t('label.last_fault')}: {fault.get('error', self.t('status.none'))} · "
+            f"{self.t('label.stop_status')}: "
+            f"{self.localizer.state_label('STOPPING' if self._stop_in_flight else status.get('state', 'IDLE'))}"
         )
 
     def save_commissioning_policy(self) -> None:
@@ -1609,8 +1918,8 @@ class A4PumpApp(tk.Tk):
             if item["level"] == "BLOCK" and item["code"] != "INVALID_ARMED_PLAN"
         ]
         if blocks:
-            messagebox.showerror(
-                "START refused — preflight BLOCK",
+            self.show_error(
+                self.t("dialog.preflight_block"),
                 "\n".join(f"{item['code']}: {item['message']}" for item in blocks),
             )
             return False
@@ -1619,10 +1928,9 @@ class A4PumpApp(tk.Tk):
             if item["code"] in {"COMMISSIONING_INCOMPLETE", "COMMISSIONING_STALE"}
         ]
         if commissioning_warnings and not self._commissioning_acknowledged:
-            if not messagebox.askyesno(
-                "Physical commissioning incomplete",
-                "Software preflight has no BLOCK findings, but physical commissioning is missing or stale.\n\n"
-                "This is not hardware validation. A per-session acknowledgement and reason are required.",
+            if not self.ask_yes_no(
+                self.t("dialog.commissioning_incomplete"),
+                self.t("dialog.commissioning_warning"),
             ):
                 return False
             reason = simpledialog.askstring(
@@ -1654,9 +1962,10 @@ class A4PumpApp(tk.Tk):
         return True
 
     def set_operational_state(self, state: str) -> None:
-        self.perfusion_state_var.set(state)
+        self._operational_state = state
+        self.perfusion_state_var.set(self.localizer.state_label(state))
         if state == "ARMED":
-            self.programmed_message_var.set("PROGRAMMED — NOT READ BACK")
+            self.programmed_message_var.set(self.t("label.programmed_not_read"))
         elif state == "DRY_RUN_PREVIEW":
             self.programmed_message_var.set("DRY-RUN PREVIEW — NOT PROGRAMMED")
         else:
@@ -1712,13 +2021,16 @@ class A4PumpApp(tk.Tk):
             f"Same directory ({cli_resolution.source})" if shared else f"DIFFERENT: {cli_resolution.active_config_dir}"
         )
         self.nis_cfg_var.set(f'set "CFG={active}"')
-        self.experiment_config_var.set(self._short_path(active, 78))
-        out_state = "disabled"
+        self.experiment_config_full_path = active
+        self.experiment_config_var.set(
+            self.t("status.path_source", source=resolution.source, path=self._short_path(active, 78))
+        )
+        out_state = self.t("label.disabled")
         if self.out_enabled_var.get():
             out_state = self.port_vars["OUT"].get() or "(port required)"
         self.experiment_pumps_var.set(
             f"IN: {self.port_vars['IN'].get()}    OUT: {out_state}    "
-            f"{'DRY-RUN' if self.dry_run_var.get() else 'LIVE'}"
+            f"{self.t('label.dry_run') if self.dry_run_var.get() else self.t('label.live')}"
         )
 
     @staticmethod
@@ -1897,32 +2209,32 @@ class A4PumpApp(tk.Tk):
         info = get_build_info()
         dialog = tk.Toplevel(self)
         self._about_dialog = dialog
-        dialog.title("About / Build information")
+        dialog.title(self.t("about.title"))
         dialog.transient(self)
         dialog.geometry("680x500")
         dialog.columnconfigure(0, weight=1)
         dialog.rowconfigure(1, weight=1)
         ttk.Label(
             dialog,
-            text=f"{APP_NAME} {info.get('human_version', APP_VERSION)}",
+            text=f"{self.t('app.title')} {info.get('human_version', APP_VERSION)}",
             style="PageTitle.TLabel",
         ).grid(row=0, column=0, sticky="w", padx=16, pady=(16, 8))
         validation_path = self.config_resolution.active_config_dir / "validation"
         details = {
-            "application": info.get("application_name", ""),
-            "release_version": info.get("human_version", ""),
-            "package_version": info.get("package_version", ""),
-            "commit": info.get("git_commit", ""),
-            "build_time": info.get("build_timestamp_utc", ""),
-            "architecture": info.get("architecture", ""),
-            "python": info.get("python_version", ""),
-            "pyinstaller": info.get("pyinstaller_version", ""),
-            "dirty": info.get("git_dirty"),
-            "signing": info.get("code_signing", "unsigned"),
-            "control_compatibility": info.get("control_compatibility_version", ""),
-            "build_fingerprint": info.get("build_identity_fingerprint", ""),
+            self.t("build.application"): info.get("application_name", ""),
+            self.t("build.release_version"): info.get("human_version", ""),
+            self.t("build.package_version"): info.get("package_version", ""),
+            self.t("build.commit"): info.get("git_commit", ""),
+            self.t("build.build_time"): info.get("build_timestamp_utc", ""),
+            self.t("build.architecture"): info.get("architecture", ""),
+            self.t("build.python"): info.get("python_version", ""),
+            self.t("build.pyinstaller"): info.get("pyinstaller_version", ""),
+            self.t("build.dirty"): info.get("git_dirty"),
+            self.t("build.signing"): info.get("code_signing", "unsigned"),
+            self.t("build.control_compatibility"): info.get("control_compatibility_version", ""),
+            self.t("build.fingerprint"): info.get("build_identity_fingerprint", ""),
             "Active Config": str(self.config_resolution.active_config_dir),
-            "validation_storage": str(validation_path),
+            self.t("about.validation_storage"): str(validation_path),
         }
         text = tk.Text(dialog, wrap="word", font=("Consolas", 9), height=18)
         text.grid(row=1, column=0, sticky="nsew", padx=16)
@@ -1952,6 +2264,7 @@ class A4PumpApp(tk.Tk):
             text="Open release notes",
             command=self.open_release_notes,
         ).grid(row=0, column=3, sticky="ew", padx=3)
+        self.localizer.bind_literal_tree(dialog)
 
     def open_diagnostics_folder(self) -> None:
         path = self.config_resolution.active_config_dir / "diagnostics"
