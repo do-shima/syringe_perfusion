@@ -9,6 +9,7 @@ from typing import Any
 from .config import app_base_dir
 from .profiles import calculate_profile
 from .run_history import recent_runs
+from .syringe_library import calibration_basis, max_expected_volume_ml, syringe_display_name
 from .ui_theme import ScrollableFrame, create_card
 
 
@@ -30,6 +31,7 @@ class GuidedExperimentFrame(ttk.Frame):
     """Presentation-only guide derived from the authoritative application state."""
 
     WIDE_BREAKPOINT = 860
+    RAIL_BREAKPOINT = 800
     ACTIVE_STATES = {"PENDING", "STARTING", "STARTED", "RUNNING"}
     PROGRAMMED_STATES = {
         "ARMED",
@@ -47,6 +49,7 @@ class GuidedExperimentFrame(ttk.Frame):
         self.layout_mode = "narrow"
         self._layout_job: str | None = None
         self._technical_visible = False
+        self._daily_expanded = False
         self._nis_ready = False
         self._invalidation_reason = ""
         self._connection_checked = False
@@ -62,7 +65,13 @@ class GuidedExperimentFrame(ttk.Frame):
         self.summary_target_var = tk.StringVar()
         self.summary_ports_var = tk.StringVar()
         self.summary_status_var = tk.StringVar()
+        self.compact_summary_var = tk.StringVar()
         self.step2_port_summary_vars = {"IN": tk.StringVar(), "OUT": tk.StringVar()}
+        self.daily_scan_var = tk.StringVar()
+        self.daily_lock_var = tk.StringVar()
+        self.daily_in_var = tk.StringVar()
+        self.daily_out_var = tk.StringVar()
+        self.daily_notice_var = tk.StringVar()
         self.connection_result_var = tk.StringVar()
         self.programming_result_var = tk.StringVar()
         self.nis_wrapper_var = tk.StringVar()
@@ -74,6 +83,7 @@ class GuidedExperimentFrame(ttk.Frame):
         self.run_programming_var = tk.StringVar()
         self.run_start_mode_var = tk.StringVar()
         self.template_display_var = tk.StringVar()
+        self.syringe_status_vars = {"IN": tk.StringVar(), "OUT": tk.StringVar()}
         self.start_mode_var = tk.StringVar(
             value="nis" if self.app.trigger_var.get().casefold() == "nis" else "gui"
         )
@@ -133,9 +143,23 @@ class GuidedExperimentFrame(ttk.Frame):
                 command=lambda step=index: self.go_to_step(step),
             )
             self.step_buttons[index] = button
+        self.narrow_summary_label = ttk.Label(
+            self.progress_card,
+            textvariable=self.compact_summary_var,
+            style="Subtitle.TLabel",
+            justify="left",
+            anchor="w",
+        )
+        self.narrow_summary_label._responsive_wrap_margin = 18  # type: ignore[attr-defined]
 
-        self.workspace = ttk.Frame(self, style="Page.TFrame")
-        self.workspace.grid(row=1, column=0, sticky="nsew")
+        self.body = ttk.Frame(self, style="Page.TFrame")
+        self.body.grid(row=1, column=0, sticky="nsew")
+        self.body.columnconfigure(0, weight=1)
+        self.body.rowconfigure(0, weight=1)
+
+        self._build_daily_rail()
+
+        self.workspace = ttk.Frame(self.body, style="Page.TFrame")
         self.workspace.rowconfigure(0, weight=1)
 
         self.step_scroll = ScrollableFrame(self.workspace, height=360)
@@ -145,7 +169,6 @@ class GuidedExperimentFrame(ttk.Frame):
 
         self.summary_card = create_card(self.workspace, self.t("workflow.summary.title"))
         self.summary_card.columnconfigure(0, weight=1)
-        self.compact_summary_var = tk.StringVar()
         self.compact_summary_label = ttk.Label(
             self.summary_card,
             textvariable=self.compact_summary_var,
@@ -217,6 +240,149 @@ class GuidedExperimentFrame(ttk.Frame):
             style="Danger.TButton",
         )
         self.app.experiment_stop_button.grid(row=0, column=1, sticky="e")
+
+    def _build_daily_rail(self) -> None:
+        card = create_card(
+            self.body,
+            self.t("daily.title"),
+            self.t("daily.description"),
+        )
+        card.columnconfigure(0, weight=1)
+        self.daily_rail = card
+        self.daily_status_label = ttk.Label(
+            card,
+            textvariable=self.daily_scan_var,
+            style="Value.TLabel",
+            justify="left",
+            anchor="w",
+            wraplength=205,
+        )
+        self.daily_status_label._responsive_wrap_margin = 18  # type: ignore[attr-defined]
+        self.daily_status_label.grid(row=2, column=0, sticky="ew", pady=(0, 4))
+        self.daily_lock_label = ttk.Label(card, textvariable=self.daily_lock_var, style="Card.TLabel")
+        self.daily_lock_label.grid(row=3, column=0, sticky="ew", pady=(0, 6))
+        self.daily_role_frames: dict[str, ttk.Frame] = {}
+        self.daily_identity_labels: dict[str, ttk.Label] = {}
+        for row, role in enumerate(("IN", "OUT"), start=4):
+            role_frame = ttk.Frame(card, style="Card.TFrame")
+            role_frame.grid(row=row, column=0, sticky="ew", pady=3)
+            role_frame.columnconfigure(0, weight=1)
+            ttk.Label(role_frame, text=role, style="SectionTitle.TLabel").grid(
+                row=0, column=0, sticky="w"
+            )
+            combo = ttk.Combobox(
+                role_frame,
+                textvariable=self.app.port_vars[role],
+                state="readonly",
+            )
+            combo.grid(row=1, column=0, sticky="ew", pady=(2, 1))
+            detail = ttk.Label(
+                role_frame,
+                textvariable=self.daily_in_var if role == "IN" else self.daily_out_var,
+                style="Subtitle.TLabel",
+                justify="left",
+                anchor="w",
+                wraplength=205,
+            )
+            detail._responsive_wrap_margin = 12  # type: ignore[attr-defined]
+            detail.grid(row=2, column=0, sticky="ew")
+            self.daily_role_frames[role] = role_frame
+            self.daily_identity_labels[role] = detail
+            if role == "IN":
+                self.daily_in_combo = combo
+            else:
+                self.daily_out_combo = combo
+        self.workflow_in_port_combo = self.daily_in_combo
+        self.workflow_out_port_combo = self.daily_out_combo
+        self.daily_notice_label = ttk.Label(
+            card,
+            textvariable=self.daily_notice_var,
+            style="Warning.TLabel",
+            justify="left",
+            anchor="w",
+            wraplength=205,
+        )
+        self.daily_notice_label.grid(row=6, column=0, sticky="ew", pady=(5, 2))
+        actions = ttk.Frame(card, style="Card.TFrame")
+        actions.grid(row=7, column=0, sticky="ew", pady=(6, 0))
+        self.daily_actions = actions
+        actions.columnconfigure(0, weight=1)
+        actions.columnconfigure(1, weight=1)
+        self.daily_scan_button = self._bind_button(
+            actions,
+            "daily.action.scan",
+            self.app.scan_ports_async,
+            style="NeutralCompact.TButton",
+        )
+        self.daily_scan_button.grid(row=0, column=0, sticky="ew", padx=(0, 3), pady=2)
+        self.daily_test_button = self._bind_button(
+            actions,
+            "daily.action.test",
+            lambda: self.app.connection_test_async(None),
+            style="NeutralCompact.TButton",
+        )
+        self.daily_test_button.grid(row=0, column=1, sticky="ew", padx=(3, 0), pady=2)
+        self.daily_lock_button = ttk.Button(
+            actions,
+            style="Success.TButton",
+            command=self.app.confirm_daily_assignments,
+        )
+        self.daily_lock_button.grid(row=1, column=0, columnspan=2, sticky="ew", pady=2)
+        self.daily_toggle_button = ttk.Button(
+            actions,
+            style="Outline.TButton",
+            command=self.toggle_daily_details,
+        )
+        self.daily_toggle_button.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+
+    def toggle_daily_details(self) -> None:
+        self._daily_expanded = not self._daily_expanded
+        self._set_daily_details(self.layout_mode == "wide" or self._daily_expanded)
+
+    def _set_daily_details(self, visible: bool) -> None:
+        description = self.daily_rail._card_description_label  # type: ignore[attr-defined]
+        widgets: list[tk.Widget] = [
+            self.daily_role_frames["IN"],
+            self.daily_role_frames["OUT"],
+            self.daily_notice_label,
+            self.daily_test_button,
+            self.daily_lock_button,
+            self.daily_lock_label,
+        ]
+        if visible:
+            self.daily_status_label.configure(style="Card.TLabel")
+            if self.layout_mode == "wide":
+                self.daily_rail.configure(width=235, height=1)
+                self.daily_rail.grid_propagate(False)
+            else:
+                self.daily_rail.configure(width=1, height=1)
+                self.daily_rail.grid_propagate(True)
+            description.grid_remove()
+            for widget in widgets:
+                widget.grid()
+            self.daily_scan_button.grid_configure(row=0, column=0, columnspan=1)
+            self.daily_test_button.grid_configure(row=0, column=1, columnspan=1)
+            self.daily_lock_button.grid_configure(row=1, column=0, columnspan=2)
+            self.daily_actions.grid_configure(row=7)
+            if self.layout_mode == "wide":
+                self.daily_toggle_button.grid_remove()
+            else:
+                self.daily_toggle_button.grid()
+                self.daily_toggle_button.grid_configure(row=2, column=0, columnspan=2)
+        else:
+            self.daily_status_label.configure(style="Card.TLabel")
+            self.daily_rail.configure(width=1, height=150)
+            self.daily_rail.grid_propagate(False)
+            description.grid_remove()
+            for widget in widgets:
+                widget.grid_remove()
+            self.daily_scan_button.grid_configure(row=0, column=0, columnspan=1)
+            self.daily_toggle_button.grid_configure(row=0, column=1, columnspan=1)
+            self.daily_actions.grid_configure(row=3)
+        self.daily_toggle_button.configure(
+            text=self.t("daily.action.collapse" if visible else "daily.action.expand")
+        )
+        self._update_daily_status_text(visible)
 
     def _build_step1(self) -> None:
         card = create_card(
@@ -316,12 +482,28 @@ class GuidedExperimentFrame(ttk.Frame):
         self.app.independent_out_flow_entry.grid(row=row, column=1, sticky="ew", pady=3)
         row += 1
 
-        syringe_values = tuple(self.app.data["syringes"])
+        syringe_values = tuple(
+            self.app.syringe_display(key) for key in self.app.data["syringes"]
+        )
         self._bind_label(card, "workflow.field.in_syringe", style="Card.TLabel").grid(row=row, column=0, sticky="w", pady=3)
         self.app.in_syringe_combo = ttk.Combobox(
-            card, textvariable=self.app.in_syringe_var, values=syringe_values, state="readonly"
+            card, textvariable=self.app.in_syringe_display_var, values=syringe_values, state="readonly"
         )
         self.app.in_syringe_combo.grid(row=row, column=1, sticky="ew", pady=3)
+        self.app.in_syringe_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self.app._on_syringe_display_selected("IN"),
+            add="+",
+        )
+        row += 1
+        in_status = ttk.Label(card, textvariable=self.syringe_status_vars["IN"], style="Subtitle.TLabel")
+        in_status.grid(row=row, column=1, sticky="ew", pady=(0, 3))
+        self._bind_button(
+            card,
+            "syringe.action.details",
+            lambda: self.show_syringe_details("IN"),
+            style="NeutralCompact.TButton",
+        ).grid(row=row, column=0, sticky="w", pady=(0, 3))
         row += 1
         self.same_syringe_check = ttk.Checkbutton(
             card,
@@ -335,9 +517,24 @@ class GuidedExperimentFrame(ttk.Frame):
         self.out_syringe_label = self._bind_label(card, "workflow.field.out_syringe", style="Card.TLabel")
         self.out_syringe_label.grid(row=row, column=0, sticky="w", pady=3)
         self.app.out_syringe_combo = ttk.Combobox(
-            card, textvariable=self.app.out_syringe_var, values=syringe_values, state="readonly"
+            card, textvariable=self.app.out_syringe_display_var, values=syringe_values, state="readonly"
         )
         self.app.out_syringe_combo.grid(row=row, column=1, sticky="ew", pady=3)
+        self.app.out_syringe_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self.app._on_syringe_display_selected("OUT"),
+            add="+",
+        )
+        row += 1
+        self._bind_button(
+            card,
+            "syringe.action.details",
+            lambda: self.show_syringe_details("OUT"),
+            style="NeutralCompact.TButton",
+        ).grid(row=row, column=0, sticky="w", pady=(0, 3))
+        ttk.Label(card, textvariable=self.syringe_status_vars["OUT"], style="Subtitle.TLabel").grid(
+            row=row, column=1, sticky="ew", pady=(0, 3)
+        )
         row += 1
 
         self._bind_label(card, "workflow.field.start_mode", style="Card.TLabel").grid(row=row, column=0, sticky="w", pady=3)
@@ -409,22 +606,19 @@ class GuidedExperimentFrame(ttk.Frame):
             self.t("workflow.step2.description"),
         )
         self.step_frames[2] = card
-        card.columnconfigure(1, weight=1)
+        card.columnconfigure(0, weight=1)
         for row, role in enumerate(("IN", "OUT"), start=2):
-            self._bind_label(card, f"workflow.field.{role.casefold()}_port", style="Card.TLabel").grid(
-                row=row, column=0, sticky="w", pady=3
+            label = ttk.Label(
+                card,
+                textvariable=self.step2_port_summary_vars[role],
+                style="Value.TLabel",
+                justify="left",
+                anchor="w",
             )
-            combo = ttk.Combobox(card, textvariable=self.app.port_vars[role], state="readonly")
-            combo.grid(row=row, column=1, sticky="ew", pady=3)
-            if role == "IN":
-                self.workflow_in_port_combo = combo
-            else:
-                self.workflow_out_port_combo = combo
-            ttk.Label(card, textvariable=self.step2_port_summary_vars[role], style="Subtitle.TLabel").grid(
-                row=row + 2, column=1, sticky="ew", pady=(0, 4)
-            )
+            label._responsive_wrap_margin = 20  # type: ignore[attr-defined]
+            label.grid(row=row, column=0, sticky="ew", pady=3)
         actions = ttk.Frame(card, style="Card.TFrame")
-        actions.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(10, 4))
+        actions.grid(row=4, column=0, sticky="ew", pady=(10, 4))
         for column in range(3):
             actions.columnconfigure(column, weight=1)
         self.app.scan_ports_button = self._bind_button(
@@ -440,10 +634,10 @@ class GuidedExperimentFrame(ttk.Frame):
         )
         self.app.experiment_write_button.grid(row=0, column=2, sticky="ew", padx=(3, 0))
         ttk.Label(card, textvariable=self.connection_result_var, style="Card.TLabel").grid(
-            row=7, column=0, columnspan=2, sticky="ew", pady=(4, 0)
+            row=5, column=0, sticky="ew", pady=(4, 0)
         )
         ttk.Label(card, textvariable=self.programming_result_var, style="Value.TLabel").grid(
-            row=8, column=0, columnspan=2, sticky="ew", pady=(4, 0)
+            row=6, column=0, sticky="ew", pady=(4, 0)
         )
 
     def _build_step3(self) -> None:
@@ -593,31 +787,56 @@ class GuidedExperimentFrame(ttk.Frame):
     def _apply_layout(self) -> None:
         self._layout_job = None
         width = max(1, self.winfo_width())
-        wide = width >= self.WIDE_BREAKPOINT
+        wide = width >= self.RAIL_BREAKPOINT
+        self.daily_rail.grid_forget()
+        self.workspace.grid_forget()
         self.step_scroll.grid_forget()
         self.summary_card.grid_forget()
         if wide:
+            self.body.columnconfigure(0, weight=0, minsize=235)
+            self.body.columnconfigure(1, weight=1, minsize=0)
+            self.body.rowconfigure(0, weight=1)
+            self.body.rowconfigure(1, weight=0)
+            self.daily_rail.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+            self.workspace.grid(row=0, column=1, sticky="nsew")
+            side_summary = width >= 1000
             self.workspace.columnconfigure(0, weight=3)
-            self.workspace.columnconfigure(1, weight=1, minsize=260)
+            self.workspace.columnconfigure(1, weight=1 if side_summary else 0, minsize=250 if side_summary else 0)
             self.workspace.rowconfigure(0, weight=1)
             self.workspace.rowconfigure(1, weight=0)
-            self.step_scroll.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-            self.summary_card.grid(row=0, column=1, sticky="nsew")
-            self.compact_summary_label.grid_remove()
-            for row, label in enumerate(self.summary_labels, start=2):
-                label.grid(row=row, column=0, sticky="ew", pady=(0, 3))
+            self.step_scroll.grid(row=0, column=0, sticky="nsew", padx=(0, 8) if side_summary else 0)
+            self.narrow_summary_label.grid_remove()
+            if side_summary:
+                self.summary_card.grid(row=0, column=1, sticky="nsew")
+                self.compact_summary_label.grid_remove()
+                for row, label in enumerate(self.summary_labels, start=2):
+                    label.grid(row=row, column=0, sticky="ew", pady=(0, 3))
+            else:
+                self.summary_card.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+                for label in self.summary_labels:
+                    label.grid_remove()
+                self.compact_summary_label.grid(row=2, column=0, sticky="ew", pady=(0, 3))
             self.layout_mode = "wide"
+            self._set_daily_details(True)
         else:
+            self.body.columnconfigure(0, weight=1, minsize=0)
+            self.body.columnconfigure(1, weight=0, minsize=0)
+            self.body.rowconfigure(0, weight=0)
+            self.body.rowconfigure(1, weight=1)
+            self.daily_rail.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+            self.workspace.grid(row=1, column=0, sticky="nsew")
             self.workspace.columnconfigure(0, weight=1)
             self.workspace.columnconfigure(1, weight=0, minsize=0)
             self.workspace.rowconfigure(0, weight=1)
             self.workspace.rowconfigure(1, weight=0)
             self.step_scroll.grid(row=0, column=0, sticky="nsew")
-            self.summary_card.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+            self.summary_card.grid_remove()
+            self.narrow_summary_label.grid(row=4, column=0, sticky="ew", pady=(5, 0))
             for label in self.summary_labels:
                 label.grid_remove()
             self.compact_summary_label.grid(row=2, column=0, sticky="ew", pady=(0, 3))
             self.layout_mode = "narrow"
+            self._set_daily_details(self._daily_expanded)
         for button in self.step_buttons.values():
             button.grid_forget()
         for column in range(4):
@@ -771,7 +990,127 @@ class GuidedExperimentFrame(ttk.Frame):
         self._update_run_status()
         self._update_target_fields()
         self._update_out_fields()
+        self._refresh_syringe_status()
+        self.refresh_daily_setup()
         self._show_current_step()
+
+    def refresh_daily_setup(self) -> None:
+        status = self.app.daily_setup_status()
+        self._update_daily_status_text(
+            self.layout_mode == "wide" or self._daily_expanded,
+            status,
+        )
+        self.daily_lock_var.set(
+            self.t("daily.status.locked" if status["locked"] else "daily.status.unlocked")
+        )
+        for role, variable in (("IN", self.daily_in_var), ("OUT", self.daily_out_var)):
+            role_status = status["roles"].get(role, {})
+            identity = role_status.get("identity") or {}
+            description = str(
+                identity.get("product")
+                or identity.get("description")
+                or identity.get("manufacturer")
+                or "—"
+            )
+            variable.set(
+                self.t(
+                    "daily.port.summary",
+                    detected=self.t(
+                        "status.detected" if role_status.get("detected") else "status.not_detected"
+                    ),
+                    identity=description,
+                )
+            )
+        findings = [item["code"] for item in status["findings"]]
+        probable = [
+            f"{role}→{ports[0]}"
+            for role, value in status["roles"].items()
+            if len(ports := value.get("probable_ports", [])) == 1
+        ]
+        if probable:
+            self.daily_notice_var.set(
+                self.t("daily.notice.probable", matches=", ".join(probable))
+            )
+        elif findings:
+            reason = next(
+                (
+                    code
+                    for code in findings
+                    if "IDENTITY_CONFLICT" in code or code == "DUPLICATE_PORT"
+                ),
+                findings[0],
+            )
+            self.daily_notice_var.set(
+                self.t(
+                    "daily.notice.blocked_summary",
+                    reason=reason,
+                    remaining=max(0, len(findings) - 1),
+                )
+            )
+        else:
+            self.daily_notice_var.set(self.t("daily.notice.ready"))
+        locked = status["locked"]
+        selection_state = "disabled" if locked else "readonly"
+        self.daily_in_combo.configure(state=selection_state)
+        in_setup_combo = getattr(self.app, "in_port_combo", None)
+        if in_setup_combo is not None:
+            in_setup_combo.configure(state=selection_state)
+        out_setup_combo = getattr(self.app, "out_port_combo", None)
+        if out_setup_combo is not None:
+            out_setup_combo.configure(
+                state=selection_state if self.app.is_pump_enabled("OUT") else "disabled"
+            )
+        details_visible = self.layout_mode == "wide" or self._daily_expanded
+        if self.app.is_pump_enabled("OUT") and details_visible:
+            self.daily_role_frames["OUT"].grid()
+            self.daily_out_combo.configure(state=selection_state)
+        else:
+            self.daily_role_frames["OUT"].grid_remove()
+        self.daily_lock_button.configure(
+            text=self.t("daily.action.unlock" if locked else "daily.action.lock"),
+            command=(
+                self.app.unlock_daily_assignments
+                if locked
+                else self.app.confirm_daily_assignments
+            ),
+            style="Warning.TButton" if locked else "Success.TButton",
+        )
+        if hasattr(self.app, "experiment_write_button"):
+            can_program = (
+                self.app.current_perfusion_setpoint is not None
+                and (self.app.dry_run_var.get() or status["ready"])
+                and self.app._active_operation is None
+            )
+            self.app.experiment_write_button.configure(
+                state="normal" if can_program else "disabled"
+            )
+
+    def _update_daily_status_text(
+        self,
+        details_visible: bool,
+        status: dict[str, Any] | None = None,
+    ) -> None:
+        value = status or self.app.daily_setup_status()
+        status_text = self.t("daily.status.ready" if value["ready"] else "daily.status.review")
+        timestamp = value["last_scan_at"] or self.t("workflow.value.not_set")
+        in_port = self.app.port_vars["IN"].get() or self.t("workflow.value.not_set")
+        out_port = (
+            self.app.port_vars["OUT"].get() or self.t("workflow.value.not_set")
+            if self.app.is_pump_enabled("OUT")
+            else self.t("label.disabled")
+        )
+        if details_visible:
+            text = self.t("daily.scan.summary", status=status_text, timestamp=timestamp)
+            text += "\n" + self.t("daily.scan.ports", in_port=in_port, out_port=out_port)
+        else:
+            text = self.t(
+                "daily.scan.compact",
+                status=status_text,
+                timestamp=timestamp,
+                in_port=in_port,
+                out_port=out_port,
+            )
+        self.daily_scan_var.set(text)
 
     def _update_progress(self, runtime_state: str) -> None:
         complete = {
@@ -947,7 +1286,6 @@ class GuidedExperimentFrame(ttk.Frame):
     def _update_out_fields(self) -> None:
         enabled = self.app.is_pump_enabled("OUT")
         out_state = "readonly" if enabled else "disabled"
-        self.workflow_out_port_combo.configure(state=out_state)
         self.app.out_syringe_combo.configure(state=out_state if not self.app.same_out_syringe_var.get() else "disabled")
         self.same_syringe_check.configure(state="normal" if enabled else "disabled")
         self.ratio_lock_check.configure(state="normal" if enabled else "disabled")
@@ -974,6 +1312,52 @@ class GuidedExperimentFrame(ttk.Frame):
                 identity = str(metadata.get("description") or metadata.get("product") or "").strip()
                 text = self.t("workflow.port.detected", device=device, identity=identity or "—")
             self.step2_port_summary_vars[role].set(text)
+
+    def _refresh_syringe_status(self) -> None:
+        for role, key in (
+            ("IN", self.app.in_syringe_var.get()),
+            ("OUT", self.app.out_syringe_var.get()),
+        ):
+            if role == "OUT" and not self.app.is_pump_enabled("OUT"):
+                self.syringe_status_vars[role].set(self.t("label.disabled"))
+                continue
+            record = self.app.data.get("syringes", {}).get(key, {})
+            basis = calibration_basis(record)
+            message = self.t(f"syringe.status.{basis['kind']}")
+            if basis["kind"] == "nominal_only":
+                message += " · " + self.t("syringe.warning.nominal_not_measured")
+            try:
+                nominal_volume = float(record.get("nominal_volume_ml", 0) or 0)
+            except (TypeError, ValueError):
+                nominal_volume = 0
+            if nominal_volume >= 20 and not all(
+                bool(record.get(field, False))
+                for field in (
+                    "pump_fit_validated",
+                    "clamp_compatibility_validated",
+                    "force_validated",
+                    "stroke_validated",
+                )
+            ):
+                message += " · " + self.t("syringe.warning.large_uncommissioned")
+            self.syringe_status_vars[role].set(message)
+
+    def show_syringe_details(self, role: str) -> None:
+        key = self.app.in_syringe_var.get() if role == "IN" else self.app.out_syringe_var.get()
+        record = self.app.data.get("syringes", {}).get(key, {})
+        basis = calibration_basis(record)
+        maximum = max_expected_volume_ml(record)
+        details = self.t(
+            "syringe.details.message",
+            role=role,
+            name=syringe_display_name(key, record),
+            key=key,
+            basis=self.t(f"syringe.status.{basis['kind']}"),
+            conversion="—" if basis["ul_per_mm"] is None else f"{basis['ul_per_mm']:.6g}",
+            maximum="—" if maximum is None else f"{maximum:.6g}",
+            notes=str(record.get("notes") or record.get("calibration_note") or "—"),
+        )
+        messagebox.showinfo(self.t("syringe.details.title"), details, parent=self.app)
 
     def _show_current_step(self) -> None:
         for index, frame in self.step_frames.items():
@@ -1176,6 +1560,8 @@ class GuidedExperimentFrame(ttk.Frame):
 
     def refresh_language(self) -> None:
         self.progress_card._card_title_label.configure(text=self.t("workflow.progress.title"))  # type: ignore[attr-defined]
+        self.daily_rail._card_title_label.configure(text=self.t("daily.title"))  # type: ignore[attr-defined]
+        self.daily_rail._card_description_label.configure(text=self.t("daily.description"))  # type: ignore[attr-defined]
         self.summary_card._card_title_label.configure(text=self.t("workflow.summary.title"))  # type: ignore[attr-defined]
         for index, frame in self.step_frames.items():
             frame._card_title_label.configure(text=self.t(f"workflow.step{index}.title"))  # type: ignore[attr-defined]
@@ -1199,4 +1585,6 @@ class GuidedExperimentFrame(ttk.Frame):
             values=tuple(self.app.localizer.display_value(value) for value in ("fixed_volume", "fixed_duration", "bounded_continuous"))
         )
         self.app.perfusion_mode_display_var.set(self.app.localizer.display_value(self.app.perfusion_mode_var.get()))
+        self.app.refresh_syringe_display_values()
+        self._set_daily_details(self.layout_mode == "wide" or self._daily_expanded)
         self.refresh()

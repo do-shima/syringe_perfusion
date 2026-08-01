@@ -7,6 +7,7 @@ from typing import Any, Iterable
 from .app_info import CONTROL_COMPATIBILITY_VERSION, get_build_info
 from .config import ConfigResolution, load_config, resolve_config
 from .perfusion_state import config_fingerprint, process_exists, read_json, read_state, runtime_paths
+from .operations import control_config_fingerprint
 from .validation_store import ValidationStore
 
 
@@ -66,7 +67,13 @@ def evaluate_preflight(
         _add(findings, "BLOCK", "UNSAFE_RUNTIME_STATE", f"Runtime state is {state_name}")
     plan = state.get("plan") if isinstance(state.get("plan"), dict) else {}
     if state_name == "ARMED":
-        if not plan or plan.get("config_fingerprint") != current_fingerprint:
+        fingerprint_matches = bool(plan) and (
+            control_config_fingerprint(config_data, plan)
+            == plan.get("control_config_fingerprint")
+            if plan.get("control_config_fingerprint")
+            else plan.get("config_fingerprint") == current_fingerprint
+        )
+        if not fingerprint_matches:
             _add(findings, "BLOCK", "INVALID_ARMED_PLAN", "ARMED plan is missing or has a config fingerprint mismatch")
         duration = plan.get("programmed_duration_s")
         if duration is None or float(duration) <= 0:

@@ -53,7 +53,7 @@ def test_startup_scan_is_background_and_keeps_saved_undetected(
         return [{"device": "COM2", "description": "Detected", "hwid": "HW2"}]
 
     monkeypatch.setattr("syringe_perfusion.gui.list_serial_ports", slow_scan)
-    app = make_app()
+    app = make_app(auto_scan=True)
     try:
         settle(app, scan_started.is_set)
         assert not scan_finished.is_set()
@@ -108,6 +108,7 @@ def test_program_arm_uses_shared_operation_and_state_controls(
         app.reload_from_json(confirm=False)
         settle(app, lambda: app.current_perfusion_setpoint is not None)
         app.dry_run_var.set(False)
+        monkeypatch.setattr(app, "require_daily_live_ready", lambda: True)
         app.program_arm_gui()
         settle(app, lambda: bool(calls) and not app._program_running)
         assert calls[0]["setpoint"].in_setpoint.direction == "forward"

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from threading import Event
 from typing import Any, Callable, Iterable
@@ -66,7 +68,8 @@ def dependency_snapshot(
 ) -> dict[str, Any]:
     pumps = config_data.get("pumps", {})
     selected = _selected_syringes(config_data)
-    return {
+    snapshot = {
+        "dependency_schema_version": 2,
         "config_fingerprint": config_fingerprint(config_dir),
         "application_version": application_version,
         "control_compatibility_version": int(control_compatibility_version),
@@ -92,6 +95,14 @@ def dependency_snapshot(
         },
         "selected_syringes": selected,
     }
+    relevant = {
+        key: snapshot[key]
+        for key in ("control_compatibility_version", "pumps", "syringes", "selected_syringes")
+    }
+    snapshot["dependency_fingerprint"] = hashlib.sha256(
+        json.dumps(relevant, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return snapshot
 
 
 def staleness_reasons(
@@ -135,7 +146,12 @@ def staleness_reasons(
         reasons.append("validation predates control compatibility tracking")
     elif stored_compatibility != current_compatibility:
         reasons.append("validation-sensitive control compatibility changed")
-    if stored.get("config_fingerprint") != current.get("config_fingerprint") and not reasons:
+    if (
+        stored.get("dependency_fingerprint")
+        and current.get("dependency_fingerprint")
+        and stored.get("dependency_fingerprint") != current.get("dependency_fingerprint")
+        and not reasons
+    ):
         reasons.append("relevant config fingerprint changed")
     return _unique(reasons)
 

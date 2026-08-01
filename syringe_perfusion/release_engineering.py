@@ -84,6 +84,7 @@ def assemble_release_directory(
         "HIL_OPERATOR_CHECKLIST.md",
         "HIL_VALIDATION_SESSION.md",
         "NIS_Elements_6_02.md",
+        "SYRINGE_LIBRARY.md",
     ):
         shutil.copy2(repository / "docs" / filename, docs / filename)
     release_notes = repository / "docs" / "releases" / f"v{human_version()}.md"
@@ -105,6 +106,7 @@ def validate_release_tree(root: str | Path) -> list[str]:
         "docs/HIL_OPERATOR_CHECKLIST.md",
         "docs/HIL_VALIDATION_SESSION.md",
         "docs/NIS_Elements_6_02.md",
+        "docs/SYRINGE_LIBRARY.md",
         "docs/RELEASE_NOTES.md",
         "_internal/build_info.json",
     )

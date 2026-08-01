@@ -340,6 +340,7 @@ def save_pump_settings(
     baudrate: int | str,
     terminator: str,
     timeout: float | str,
+    hardware_identities: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> Path:
     resolution = config_path if isinstance(config_path, ConfigResolution) else validate_config_directory(config_path)
     path = resolution.active_pumps_json
@@ -369,6 +370,8 @@ def save_pump_settings(
             "timeout": values["timeout"],
         }
     )
+    if hardware_identities and isinstance(hardware_identities.get("IN"), Mapping):
+        pumps["IN"]["hardware_identity"] = dict(hardware_identities["IN"])
     pumps["OUT"].update(
         {
             "enabled": values["out_enabled"],
@@ -378,6 +381,8 @@ def save_pump_settings(
             "timeout": values["timeout"],
         }
     )
+    if hardware_identities and isinstance(hardware_identities.get("OUT"), Mapping):
+        pumps["OUT"]["hardware_identity"] = dict(hardware_identities["OUT"])
     _atomic_write_json(path, document, backup=True)
 
     reloaded = load_json(path)

@@ -4,14 +4,16 @@
 
 NIS starts a plan that the GUI has already calculated, programmed, and atomically armed. NIS does not recalculate flow and does not rewrite q1/q2/q3/q4/q5/q6h1 settings.
 
-1. Start GUI and scan serial ports.
-2. Select independent IN and OUT ports and test each.
+1. Start GUI and wait for the background daily serial-port scan.
+2. Review and explicitly lock the independent IN and OUT adapter assignments in **Daily Setup / 本日の接続**. A current successful scan and identity-consistent lock are required before GUI LIVE programming or start.
 3. Choose Fixed volume, Fixed duration, or bounded continuous flow.
 4. Review programmed speed/duration and exact UART commands.
 5. Switch from DRY-RUN to LIVE.
 6. Select **PROGRAM / ARM BOTH**.
 7. Confirm **PROGRAMMED — NOT READ BACK**.
 8. Start NIS acquisition.
+
+The daily assignment review is a GUI LIVE prerequisite and does not change wrapper semantics: NIS still reads the same external `pumps.json`. Scanning and connection checks never send movement commands. A date change, USB-topology change, identity conflict, unlock, or confirmed reassignment requires review and reprogramming in the GUI before the next LIVE session.
 
 Before production use, open Setup → Commissioning and complete the applicable adapter identity, direction, STOP, cancellation, flow, balance, and workstation checks. Run:
 

@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.0-beta.5] - 2026-08-01
+
+Superseding hardware-validation release candidate. Beta.4 remains historical but is superseded for routine HIL use because it did not require daily adapter review or provide a traceable physical-syringe interchange workflow.
+
+### Added
+
+- Added a persistent Daily Setup rail with asynchronous startup enumeration, local-date/topology freshness, detected identity, explicit IN/OUT confirmation, and a workstation-local assignment lock.
+- Added a backward-compatible schema-v2 physical syringe library with explicit calibrated/nominal/missing evidence, optional usable stroke and mechanical-commissioning metadata, and nominal capacities through 150 mL.
+- Added preview-first JSON/CSV import, conflict choices, atomic apply with backups/provenance, JSON/CSV export, management UI, and read-only syringe CLI inspection commands.
+
+### Safety
+
+- LIVE GUI PROGRAM / ARM and START require a current reviewed daily scan; condition editing and DRY-RUN preview do not.
+- COM renumbering is presented as a probable identity match and is never applied without operator confirmation. Identity conflicts remain blocking.
+- Selected-syringe calibration changes invalidate ARMED; unrelated library records use a dependency-aware plan fingerprint and do not invalidate a valid plan.
+- Emergency STOP target snapshots remain independent of current editable assignments.
+
+### Compatibility
+
+- Control compatibility remains `1`; UART commands, flow equations, quantization, calibration precedence, START/STOP coordination, cancellation, runtime state, CLI hardware behavior, and NIS wrappers are unchanged.
+
 ## [0.2.0-beta.4] - 2026-08-01
 
 Superseding hardware-validation release candidate. Beta.3 remains historical but is superseded for routine HIL operation because the primary Experiment screen exposed too many independent settings simultaneously.

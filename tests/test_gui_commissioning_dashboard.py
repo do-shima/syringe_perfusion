@@ -108,7 +108,7 @@ def test_about_dialog_shows_build_identity_without_constructing_pump(monkeypatch
         text_widgets = [widget for widget in descendants(app._about_dialog) if widget.winfo_class() == "Text"]
         assert text_widgets
         contents = text_widgets[0].get("1.0", "end")
-        assert "Release version: 0.2.0-beta.4" in contents
+        assert "Release version: 0.2.0-beta.5" in contents
         assert "Control compatibility: 1" in contents
         assert constructed == []
     finally:

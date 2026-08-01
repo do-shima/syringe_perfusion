@@ -96,6 +96,18 @@ if ($LASTEXITCODE -ne 0) {
 if ($LASTEXITCODE -ne 0) {
     throw "Packaged recent-runs smoke failed."
 }
+& $cli --config-dir (Join-Path $repository "config") syringe-list --json *> $null
+if ($LASTEXITCODE -ne 0) {
+    throw "Packaged syringe-list smoke failed."
+}
+& $cli --config-dir (Join-Path $repository "config") syringe-show terumo_ss05lz_5ml --json *> $null
+if ($LASTEXITCODE -ne 0) {
+    throw "Packaged syringe-show smoke failed."
+}
+& $cli --config-dir (Join-Path $repository "config") syringe-library-status --json *> $null
+if ($LASTEXITCODE -ne 0) {
+    throw "Packaged syringe-library-status smoke failed."
+}
 & $cli --config-dir (Join-Path $repository "config") diagnostics-summary *> $null
 if ($LASTEXITCODE -ne 0) {
     throw "Packaged diagnostics-summary smoke failed."

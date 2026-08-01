@@ -54,7 +54,8 @@ def test_mousewheel_page_home_end_and_resize_update_viewport() -> None:
         initial_width = int(float(app.experiment_scroll.canvas.itemcget(app.experiment_scroll.window_id, "width")))
         settle_geometry(app, 1100, 720)
         resized_width = int(float(app.experiment_scroll.canvas.itemcget(app.experiment_scroll.window_id, "width")))
-        assert resized_width > initial_width
+        assert resized_width != initial_width
+        assert resized_width == pytest.approx(app.experiment_scroll.canvas.winfo_width(), abs=2)
         assert app.experiment_scroll.canvas.bbox("all") is not None
     finally:
         app.destroy()
@@ -69,7 +70,11 @@ def test_wide_layout_has_two_columns_and_narrow_layout_stacks() -> None:
         assert app.experiment_pair_card.grid_info()["column"] == 1
         settle_geometry(app, 900, 600)
         assert app.experiment_layout_mode == "narrow"
-        assert app.experiment_setpoint_card.grid_info()["row"] != app.experiment_pair_card.grid_info()["row"]
+        # The guided layout keeps the step workspace full-width and moves its
+        # compact summary into the fixed progress card at narrow widths.
+        assert app.guided_workflow.step_scroll.grid_info()["column"] == 0
+        assert app.guided_workflow.narrow_summary_label.winfo_ismapped()
+        assert not app.guided_workflow.summary_card.winfo_ismapped()
         positions = {
             (button.grid_info()["row"], button.grid_info()["column"])
             for button in (

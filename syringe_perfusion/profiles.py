@@ -128,6 +128,8 @@ def calculate(
 def calculate_profile(profile: dict[str, Any], syringe: dict[str, Any], syringe_key: str) -> CalculationResult:
     ul_per_mm = syringe.get("calibrated_ul_per_mm")
     if ul_per_mm is None:
+        ul_per_mm = syringe.get("nominal_ul_per_mm")
+    if ul_per_mm is None:
         ul_per_mm = ul_per_mm_from_inner_diameter(syringe["nominal_inner_diameter_mm"])
     return calculate(
         profile["mode"],

@@ -22,6 +22,7 @@ from .app_info import (
 from .assets import find_asset, load_tk_image, set_window_icon
 from .flow_control import PerfusionSetpoint, build_perfusion_setpoint
 from .operations import (
+    control_config_fingerprint,
     get_arm_status,
     program_pair,
     pushpull,
@@ -50,13 +51,22 @@ from .config import (
 )
 from .coordinator import OperationCoordinator, RunToken
 from .diagnostics import export_diagnostics
+from .daily_setup import (
+    confirm_assignments,
+    evaluate_daily_setup,
+    load_daily_setup,
+    record_successful_scan,
+    unlock_assignments,
+)
 from .gui_commissioning import CommissioningFrame
 from .gui_history import RunHistoryFrame
 from .gui_recipe import RecipeBuilderFrame
+from .gui_syringe_library import SyringeLibraryFrame
 from .gui_workflow import GuidedExperimentFrame
 from .i18n import LANGUAGE_PREFERENCES, Localizer
 from .preflight import assess_preflight
 from .profiles import calculate, calculate_profile, result_to_dict, ul_per_mm_from_inner_diameter
+from .syringe_library import calibration_basis, syringe_display_name
 from .ui_theme import ScrollableFrame, apply_theme, create_card, status_badge
 from .validation_store import ValidationStore
 
@@ -75,7 +85,13 @@ def merge_port_candidates(*groups: list[str] | tuple[str, ...]) -> list[str]:
 
 
 class A4PumpApp(tk.Tk):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        daily_setup_record: dict[str, Any] | None = None,
+        persist_daily_setup: bool = True,
+        auto_scan: bool = True,
+    ) -> None:
         super().__init__()
         initial_settings = load_user_settings()
         initial_ui = initial_settings.get("ui_preferences", {})
@@ -89,6 +105,15 @@ class A4PumpApp(tk.Tk):
         set_window_icon(self)
         self.config_resolution = resolve_config()
         self.data = load_config(self.config_resolution)
+        self.daily_setup_record = (
+            load_daily_setup(initial_ui, self.config_resolution.active_config_dir)
+            if daily_setup_record is None
+            else load_daily_setup(
+                {"daily_port_setup": daily_setup_record},
+                self.config_resolution.active_config_dir,
+            )
+        )
+        self._persist_daily_setup_enabled = bool(persist_daily_setup)
         self.ensure_gui_pump_defaults()
         self._loading_settings = True
         self._pump_settings_dirty = False
@@ -170,6 +195,8 @@ class A4PumpApp(tk.Tk):
         self.maximum_duration_s_var = tk.StringVar(value="300")
         self.in_syringe_var = tk.StringVar(value="terumo_ss05lz_5ml")
         self.out_syringe_var = tk.StringVar(value="terumo_ss05lz_5ml")
+        self.in_syringe_display_var = tk.StringVar()
+        self.out_syringe_display_var = tk.StringVar()
         self.same_out_syringe_var = tk.BooleanVar(value=True)
         self.out_ratio_locked_var = tk.BooleanVar(value=True)
         self.out_ratio_var = tk.StringVar(value="1.0")
@@ -200,6 +227,7 @@ class A4PumpApp(tk.Tk):
         self._logo_image: tk.PhotoImage | None = None
 
         self._build()
+        self.refresh_syringe_display_values()
         self.localizer.bind_literal_tree(self)
         self._refresh_localized_display_values()
         for variable in (
@@ -240,11 +268,135 @@ class A4PumpApp(tk.Tk):
         self.refresh_config_display()
         self.schedule_perfusion_preview()
         self._ui_queue_after_id = self.after(25, self._drain_ui_queue)
-        self.after(50, self.scan_ports_async)
+        if auto_scan:
+            self.after(50, self.scan_ports_async)
         self._state_poll_after_id = self.after(800, self.poll_runtime_state)
 
     def t(self, key: str, **parameters: Any) -> str:
         return self.localizer.t(key, **parameters)
+
+    def syringe_display(self, key: str) -> str:
+        record = self.data.get("syringes", {}).get(key, {})
+        basis = calibration_basis(record)
+        status = self.t(f"syringe.status.{basis['kind']}")
+        return f"{syringe_display_name(key, record)} — {status}"
+
+    def syringe_key_from_display(self, value: str) -> str | None:
+        return next(
+            (
+                key
+                for key in self.data.get("syringes", {})
+                if self.syringe_display(key) == value
+            ),
+            None,
+        )
+
+    def refresh_syringe_display_values(self) -> None:
+        values = tuple(
+            self.syringe_display(key)
+            for key, record in self.data.get("syringes", {}).items()
+            if bool(record.get("active", True))
+            or key in {self.in_syringe_var.get(), self.out_syringe_var.get()}
+        )
+        for name in ("in_syringe_combo", "out_syringe_combo"):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.configure(values=values)
+        self.in_syringe_display_var.set(self.syringe_display(self.in_syringe_var.get()))
+        self.out_syringe_display_var.set(self.syringe_display(self.out_syringe_var.get()))
+
+    def _on_syringe_display_selected(self, role: str) -> None:
+        display = (
+            self.in_syringe_display_var.get()
+            if role == "IN"
+            else self.out_syringe_display_var.get()
+        )
+        key = self.syringe_key_from_display(display)
+        if key is None:
+            return
+        if role == "IN":
+            self.in_syringe_var.set(key)
+        else:
+            self.out_syringe_var.set(key)
+
+    def daily_setup_status(self) -> dict[str, Any]:
+        return evaluate_daily_setup(
+            self.daily_setup_record,
+            self.data,
+            self.detected_ports,
+        )
+
+    def daily_live_ready(self) -> bool:
+        return bool(self.daily_setup_status()["ready"])
+
+    def _persist_daily_setup(self) -> None:
+        if self._persist_daily_setup_enabled:
+            persist_ui_preferences({"daily_port_setup": self.daily_setup_record})
+
+    def require_daily_live_ready(self) -> bool:
+        if self.dry_run_var.get():
+            return True
+        status = self.daily_setup_status()
+        if status["ready"]:
+            return True
+        codes = ", ".join(item["code"] for item in status["findings"])
+        self.show_error(
+            self.t("daily.dialog.blocked_title"),
+            self.t("daily.dialog.blocked_message", reasons=codes),
+        )
+        return False
+
+    def confirm_daily_assignments(self) -> None:
+        if not self.ask_yes_no(
+            self.t("daily.dialog.confirm_title"),
+            self.t("daily.dialog.confirm_message"),
+            parent=self,
+        ):
+            return
+        try:
+            self.apply_gui_pump_settings()
+            record = confirm_assignments(
+                self.daily_setup_record,
+                self.data,
+                self.detected_ports,
+            )
+            identities = {
+                role: assignment["identity"]
+                for role, assignment in record["assignments"].items()
+            }
+            save_pump_settings(
+                self.config_resolution,
+                in_port=self.port_vars["IN"].get(),
+                out_enabled=self.out_enabled_var.get(),
+                out_port=self.port_vars["OUT"].get(),
+                baudrate=self.baudrate_var.get(),
+                terminator=self.terminator_var.get(),
+                timeout=self.timeout_var.get(),
+                hardware_identities=identities,
+            )
+            self.daily_setup_record = record
+            self._persist_daily_setup()
+            self.data = load_config(self.config_resolution)
+            self._pump_settings_dirty = False
+            self._invalidate_shared_plan("daily port assignments confirmed or changed")
+            self.guided_workflow.invalidate_after_hardware()
+            self.guided_workflow.refresh_daily_setup()
+            self.set_status(self.t("daily.status.locked"))
+        except Exception as exc:
+            self.show_error(self.t("daily.dialog.confirm_failed"), str(exc))
+
+    def unlock_daily_assignments(self) -> None:
+        if not self.ask_yes_no(
+            self.t("daily.dialog.unlock_title"),
+            self.t("daily.dialog.unlock_message"),
+            parent=self,
+        ):
+            return
+        self.daily_setup_record = unlock_assignments(self.daily_setup_record)
+        self._persist_daily_setup()
+        self._invalidate_shared_plan("daily port assignments unlocked")
+        self.guided_workflow.invalidate_after_hardware()
+        self.guided_workflow.refresh_daily_setup()
 
     def localized_build_identity(self, info: dict[str, Any] | None = None) -> str:
         value = info or get_build_info()
@@ -383,6 +535,7 @@ class A4PumpApp(tk.Tk):
             "profiles": management_page,
             "calculator": management_page,
             "recipes": management_page,
+            "syringes": management_page,
         }
 
         self._build_experiment_tab(experiment_tab)
@@ -433,6 +586,7 @@ class A4PumpApp(tk.Tk):
                 "profiles": self.nav_buttons["management"],
                 "calculator": self.nav_buttons["management"],
                 "recipes": self.nav_buttons["management"],
+                "syringes": self.nav_buttons["management"],
             }
         )
         ttk.Separator(parent, orient="horizontal").grid(row=20, column=0, sticky="ew", pady=16)
@@ -473,6 +627,7 @@ class A4PumpApp(tk.Tk):
             "profiles": ("nav.profiles", "page.advanced.subtitle"),
             "calculator": ("nav.calculator", "page.advanced.subtitle"),
             "recipes": ("nav.recipes", "page.advanced.subtitle"),
+            "syringes": ("nav.syringes", "page.advanced.subtitle"),
         }
         title_key, subtitle_key = titles[page]
         title = self.t(title_key)
@@ -487,16 +642,17 @@ class A4PumpApp(tk.Tk):
             "profiles": "management",
             "calculator": "management",
             "recipes": "management",
+            "syringes": "management",
         }.get(page, page)
         for key in ("experiment", "history", "management"):
             button = self.nav_buttons[key]
             button.configure(style="NavSelected.TButton" if key == selected_main else "Nav.TButton")
         if page in {"setup", "pumps"}:
             self.management_notebook.select(0)
-        elif page in {"advanced", "profiles", "calculator", "recipes"}:
+        elif page in {"advanced", "profiles", "calculator", "recipes", "syringes"}:
             self.management_notebook.select(1)
-        if page in {"profiles", "calculator", "recipes"} and hasattr(self, "advanced_notebook"):
-            self.advanced_notebook.select({"profiles": 0, "calculator": 1, "recipes": 2}[page])
+        if page in {"profiles", "calculator", "recipes", "syringes"} and hasattr(self, "advanced_notebook"):
+            self.advanced_notebook.select({"profiles": 0, "calculator": 1, "recipes": 2, "syringes": 3}[page])
         self.set_status(f"{self.t('status.ready')} - {title}")
 
     def set_status(self, message: str) -> None:
@@ -986,6 +1142,8 @@ class A4PumpApp(tk.Tk):
             modes = ("fixed_volume", "fixed_duration", "bounded_continuous")
             self.perfusion_mode_combo.configure(values=tuple(self.localizer.display_value(value) for value in modes))
             self.perfusion_mode_display_var.set(self.localizer.display_value(self.perfusion_mode_var.get()))
+        if hasattr(self, "in_syringe_combo"):
+            self.refresh_syringe_display_values()
         if hasattr(self, "calc_mode_combo"):
             modes = ("volume_duration", "volume_flow", "speed_duration")
             self.calc_mode_combo.configure(values=tuple(self.localizer.display_value(value) for value in modes))
@@ -1018,10 +1176,11 @@ class A4PumpApp(tk.Tk):
             self.management_notebook.tab(0, text=self.t("nav.hardware"))
             self.management_notebook.tab(1, text=self.t("nav.advanced"))
         if hasattr(self, "advanced_notebook"):
-            for index, key in enumerate(("nav.profiles", "nav.calculator", "nav.recipes")):
+            for index, key in enumerate(("nav.profiles", "nav.calculator", "nav.recipes", "nav.syringes")):
                 self.advanced_notebook.tab(index, text=self.t(key))
         for child in (
             getattr(self, "recipe_tab", None),
+            getattr(self, "syringe_library_tab", None),
             getattr(self, "history_tab", None),
             getattr(self, "commissioning_tab", None),
             getattr(self, "guided_workflow", None),
@@ -1121,9 +1280,11 @@ class A4PumpApp(tk.Tk):
         self.profile_scroll = profile_scroll
         self.calculator_scroll = calc_scroll
         self.recipe_tab = RecipeBuilderFrame(self.advanced_notebook, self)
+        self.syringe_library_tab = SyringeLibraryFrame(self.advanced_notebook, self)
         self.advanced_notebook.add(profile_scroll, text="Profiles")
         self.advanced_notebook.add(calc_scroll, text="Calculator")
         self.advanced_notebook.add(self.recipe_tab, text="Recipes")
+        self.advanced_notebook.add(self.syringe_library_tab, text="Syringes")
         self._build_profile_tab(profile_scroll.inner)
         self._build_calc_tab(calc_scroll.inner)
 
@@ -1761,8 +1922,13 @@ class A4PumpApp(tk.Tk):
         if error:
             self.port_scan_status_var.set(self.t("status.scan_failed", error=error))
             self.set_status(f"Port scan failed: {error}")
+            workflow = getattr(self, "guided_workflow", None)
+            if workflow is not None:
+                workflow.refresh_daily_setup()
             return
         self.detected_ports = ports
+        self.daily_setup_record = record_successful_scan(self.daily_setup_record, ports)
+        self._persist_daily_setup()
         saved = [
             str(self.data["pumps"].get("IN", {}).get("port", "")),
             str(self.data["pumps"].get("OUT", {}).get("port", "")),
@@ -1773,13 +1939,15 @@ class A4PumpApp(tk.Tk):
         self.out_port_combo.configure(values=values)
         workflow = getattr(self, "guided_workflow", None)
         if workflow is not None:
-            workflow.workflow_in_port_combo.configure(values=values)
-            workflow.workflow_out_port_combo.configure(values=values)
+            for name in ("workflow_in_port_combo", "workflow_out_port_combo"):
+                combo = getattr(workflow, name, None)
+                if combo is not None:
+                    combo.configure(values=values)
         timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
         self.port_scan_status_var.set(self.t("status.last_scan", timestamp=timestamp, count=len(ports)))
         self.update_selected_port_metadata()
         if workflow is not None:
-            workflow.refresh()
+            workflow.refresh_daily_setup()
         if hasattr(self, "pump_log"):
             self.append_log(self.pump_log, f"Ports: {', '.join(values) or '(none)'}")
 
@@ -1938,6 +2106,7 @@ class A4PumpApp(tk.Tk):
     def on_same_syringe(self) -> None:
         if self.same_out_syringe_var.get():
             self.out_syringe_var.set(self.in_syringe_var.get())
+        self.refresh_syringe_display_values()
         self.out_syringe_combo.configure(
             state="disabled" if not self.is_pump_enabled("OUT") or self.same_out_syringe_var.get() else "readonly"
         )
@@ -1955,6 +2124,8 @@ class A4PumpApp(tk.Tk):
     def program_arm_gui(self) -> None:
         if self._operation_running:
             self.set_status(f"Another operation is running: {self._active_operation}")
+            return
+        if not self.require_daily_live_ready():
             return
         try:
             loading_before_program = self._loading_settings
@@ -2027,6 +2198,8 @@ class A4PumpApp(tk.Tk):
                 self.t("dialog.start_refused"),
                 self.t("dialog.switch_live_arm"),
             )
+            return
+        if not self.require_daily_live_ready():
             return
         if get_arm_status(self.config_resolution).get("state") != "ARMED":
             self.show_error(self.t("dialog.start_refused"), self.t("dialog.not_armed"))
@@ -2463,6 +2636,11 @@ class A4PumpApp(tk.Tk):
                 raise FileNotFoundError(f"Missing files: {', '.join(resolution.missing_files)}")
             data = load_config(resolution)
             self.config_resolution = resolution
+            settings = load_user_settings().get("ui_preferences", {})
+            self.daily_setup_record = load_daily_setup(
+                settings if isinstance(settings, dict) else {},
+                resolution.active_config_dir,
+            )
             self.validation_store = ValidationStore(resolution)
             if hasattr(self, "commissioning_tab"):
                 self.commissioning_tab.store = ValidationStore(resolution)
@@ -2497,7 +2675,7 @@ class A4PumpApp(tk.Tk):
             if (
                 old_state
                 and old_state.get("state") in {"ARMED", "PENDING", "STARTING", "DRY_RUN_PREVIEW"}
-                and (old_state.get("plan") or {}).get("config_fingerprint") != config_fingerprint(resolution.active_config_dir)
+                and not self._state_plan_matches_config(old_state, data)
             ):
                 invalidate_armed(resolution.active_config_dir, "relevant config reload")
             self.set_status(f"Reloaded: {resolution.active_pumps_json}")
@@ -2520,6 +2698,7 @@ class A4PumpApp(tk.Tk):
             widget = getattr(self, widget_name, None)
             if widget is not None:
                 widget.configure(values=syringe_values)
+        self.refresh_syringe_display_values()
         for variable, values in (
             (self.profile_in_var, profile_values),
             (self.profile_out_var, profile_values),
@@ -2534,6 +2713,21 @@ class A4PumpApp(tk.Tk):
         self.update_syringe_info()
         self.update_profile_info()
         self.update_dashboard()
+        library = getattr(self, "syringe_library_tab", None)
+        if library is not None:
+            library.refresh()
+
+    def _state_plan_matches_config(
+        self,
+        state: dict[str, Any],
+        data: dict[str, Any],
+    ) -> bool:
+        plan = state.get("plan") if isinstance(state.get("plan"), dict) else {}
+        if plan.get("control_config_fingerprint"):
+            return plan["control_config_fingerprint"] == control_config_fingerprint(data, plan)
+        return plan.get("config_fingerprint") == config_fingerprint(
+            self.config_resolution.active_config_dir
+        )
 
     def choose_config_directory(self) -> None:
         selected = filedialog.askdirectory(

@@ -2,7 +2,7 @@
 
 This guide makes controlled bench validation reproducible. It does not claim that any pump, tubing path, microscope, or NIS workstation has been physically validated.
 
-For routine hardware-in-the-loop work, use 0.2.0-beta.4 or later. Beta.1 is superseded because the initial Experiment viewport could make lower controls inaccessible. Beta.2 is superseded because Recipe and secondary-screen usability remained incomplete at normal and high-DPI sizes. Beta.3 is superseded for routine operation because the primary screen still exposed many independent settings simultaneously. Beta.4 adds a presentation-only guided workflow; control compatibility remains `1`.
+For routine hardware-in-the-loop work, use 0.2.0-beta.5 or later. Beta.1 is superseded because the initial Experiment viewport could make lower controls inaccessible. Beta.2 is superseded because Recipe and secondary-screen usability remained incomplete at normal and high-DPI sizes. Beta.3 is superseded because the primary screen exposed too many independent settings. Beta.4 is superseded because it did not enforce daily adapter review or provide traceable physical-syringe interchange. Beta.5 retains control compatibility `1`.
 
 The GUI supports 日本語 and English. On a Japanese Windows UI, `自動 / Auto` selects Japanese unless an explicit language was saved. Language switching changes display text only: internal states, UART previews, Active Config, ARMED plans, commissioning evidence, and calibration values remain canonical. Experiment keeps primary actions and global 全停止 visible while dashboard details scroll.
 
@@ -37,8 +37,8 @@ Every new schema-v2 record identifies the operator, release/package version, bui
 
 1. Install the Windows one-folder build.
 2. Confirm the Active Config.
-3. Scan ports.
-4. Confirm IN and OUT adapter identity.
+3. Let the Daily Setup startup scan finish.
+4. Confirm and lock the IN and OUT adapter identity for the day.
 5. Test port opening.
 6. Validate IN forward direction.
 7. Validate OUT reverse direction.
@@ -57,6 +57,10 @@ Every new schema-v2 record identifies the operator, release/package version, bui
 The Commissioning page displays device, description, HWID, manufacturer, product, serial number, VID, PID, and location when supplied by the OS. Physically confirm each adapter role. COM numbers never imply IN or OUT.
 
 If a stable serial/HWID appears on a different COM port, the UI presents it only as a probable match. An operator must explicitly confirm before `pumps.json` changes. Conflicting stable identity makes validation stale and can block preflight.
+
+The daily assignment lock is a workstation-local UI preference. `pumps.json` remains authoritative for ports and stores the confirmed identity snapshot. A date rollover or changed USB topology requires a new scan/review before GUI LIVE programming or start. Scanning enumerates ports only; connection checking opens and closes ports without sending movement commands. Neither is physical direction or STOP evidence.
+
+Physical syringe records and interchange rules are documented in [Physical Syringe Library](SYRINGE_LIBRARY.md). Capacity support through 150 mL is software metadata and does not prove pump fit, clamp compatibility, force, usable stroke, or flow accuracy.
 
 ## Direction and STOP
 

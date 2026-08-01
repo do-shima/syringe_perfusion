@@ -9,6 +9,8 @@ Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_cancel_pending.cmd");
 Int_ExecProgram("<A4PUMP_ROOT>\nis_cmd\pump_stop_all.cmd");
 ```
 
+Before programming each day, start the GUI, wait for the background port scan, and review/lock the IN and OUT identities in **Daily Setup / 本日の接続**. This workstation-local readiness check does not alter these wrappers or their `%ROOT%\config` target. Scanning and connection checks do not send movement commands.
+
 - `pump_start_armed.cmd`: start the already-programmed ARMED plan; no recalculation or setting write.
 - `pump_start_armed_after_300s.cmd`: schedule a detached start after 300 seconds and return promptly.
 - `pump_cancel_pending.cmd`: atomically cancel a pending start.

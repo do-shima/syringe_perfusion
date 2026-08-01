@@ -156,6 +156,7 @@ def test_gui_requested_delay_uses_shared_scheduler(tmp_path: Path, monkeypatch) 
     try:
         app.config_resolution = validate_config_directory(active)
         app.dry_run_var.set(False)
+        monkeypatch.setattr(app, "require_daily_live_ready", lambda: True)
         app.requested_start_delay_var.set("12.5")
         # The guided workflow treats start timing as a Step 1 condition, so a
         # previously armed plan is intentionally invalidated.  Re-arm the

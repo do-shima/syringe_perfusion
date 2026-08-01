@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -155,9 +157,8 @@ def validate_armed_plan(
     plan = state.get("plan")
     if not isinstance(plan, dict) or plan.get("dry_run"):
         raise ValueError("DRY_RUN_PREVIEW cannot be started")
-    if plan.get("config_fingerprint") != config_fingerprint(root):
-        raise ValueError("Active Config fingerprint does not match the armed plan")
     data = load_config(resolution)
+    _validate_plan_fingerprint(root, data, plan)
     in_cfg, out_cfg = _validate_pair_config(data)
     for key, cfg in (("IN", in_cfg), ("OUT", out_cfg)):
         planned = plan["pumps"][key]
@@ -229,9 +230,8 @@ def start_armed_pair(
         coordinator.mark_fault(token, operation="start_armed_pair", error="reserved plan is missing")
         raise ValueError("reserved plan is missing")
     try:
-        if plan.get("config_fingerprint") != config_fingerprint(root):
-            raise ValueError("Active Config fingerprint does not match the armed plan")
         data = load_config(resolution)
+        _validate_plan_fingerprint(root, data, plan)
         from .validation_store import ValidationStore
 
         validation_at_start = ValidationStore(resolution).status(data=data)["status"]
@@ -406,7 +406,7 @@ def _build_plan(
             "flow_difference_ml_min": calculated.flow_difference_ml_min,
             "uart_commands": calculated.uart_commands,
         }
-    return {
+    plan = {
         "schema_version": 1,
         "plan_id": plan_id,
         "created_at": now_iso(),
@@ -420,6 +420,55 @@ def _build_plan(
         "not_read_back": True,
         **metadata,
     }
+    plan["control_config_fingerprint"] = control_config_fingerprint(data, plan)
+    return plan
+
+
+def control_config_fingerprint(data: dict[str, Any], plan: dict[str, Any]) -> str:
+    """Fingerprint only configuration capable of changing this armed plan."""
+    dependencies: dict[str, Any] = {"pumps": {}, "syringes": {}}
+    plan_pumps = plan.get("pumps") if isinstance(plan.get("pumps"), dict) else {}
+    for role in sorted(plan_pumps):
+        planned = plan_pumps[role] if isinstance(plan_pumps[role], dict) else {}
+        configured = data.get("pumps", {}).get(role, {})
+        dependencies["pumps"][role] = {
+            key: configured.get(key)
+            for key in ("enabled", "port", "baudrate", "terminator", "timeout", "commands")
+        }
+        syringe_key = str(planned.get("syringe_key", ""))
+        syringe = data.get("syringes", {}).get(syringe_key, {})
+        dependencies["syringes"][syringe_key] = {
+            key: syringe.get(key)
+            for key in (
+                "calibrated_ul_per_mm",
+                "nominal_ul_per_mm",
+                "nominal_inner_diameter_mm",
+                "maximum_usable_stroke_mm",
+                "active",
+            )
+        }
+    encoded = json.dumps(
+        dependencies,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _validate_plan_fingerprint(
+    root: Path,
+    data: dict[str, Any],
+    plan: dict[str, Any],
+) -> None:
+    expected = plan.get("control_config_fingerprint")
+    if expected:
+        actual = control_config_fingerprint(data, plan)
+    else:
+        actual = config_fingerprint(root)
+        expected = plan.get("config_fingerprint")
+    if expected != actual:
+        raise ValueError("Active Config fingerprint does not match the armed plan")
 
 
 def _validate_pair_config(data: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:

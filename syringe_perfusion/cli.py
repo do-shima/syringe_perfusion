@@ -34,6 +34,7 @@ from .recipe_engine import RecipeEngine
 from .recipe_model import validate_recipe
 from .recipe_store import list_recipes, load_recipe
 from .run_history import recent_runs
+from .syringe_library import calibration_basis, load_syringe_document, syringe_display_name
 from .validation_store import ValidationStore
 
 
@@ -73,6 +74,20 @@ def build_parser() -> argparse.ArgumentParser:
     history.add_argument("--dish-id", default="")
     history.add_argument("--condition", default="")
     history.add_argument("--json", action="store_true")
+
+    syringe_list = subparsers.add_parser(
+        "syringe-list", help="List physical syringe library records without opening serial ports"
+    )
+    syringe_list.add_argument("--json", action="store_true")
+    syringe_show = subparsers.add_parser(
+        "syringe-show", help="Show one physical syringe library record"
+    )
+    syringe_show.add_argument("key")
+    syringe_show.add_argument("--json", action="store_true")
+    syringe_status = subparsers.add_parser(
+        "syringe-library-status", help="Inspect syringe calibration coverage"
+    )
+    syringe_status.add_argument("--json", action="store_true")
 
     diagnostics = subparsers.add_parser(
         "diagnostics-summary",
@@ -288,6 +303,61 @@ def dispatch(args: argparse.Namespace) -> int:
                 )
         return 0
 
+    if args.command in {"syringe-list", "syringe-show", "syringe-library-status"}:
+        document = load_syringe_document(resolution.active_config_dir)
+        records = document["syringes"]
+        if args.command == "syringe-show":
+            if args.key not in records:
+                raise ValueError(f"unknown syringe: {args.key}")
+            value = {
+                "key": args.key,
+                "display": syringe_display_name(args.key, records[args.key]),
+                "calibration_basis": calibration_basis(records[args.key]),
+                **records[args.key],
+            }
+            if args.json:
+                print(json.dumps(value, ensure_ascii=True, indent=2))
+            else:
+                for key, item in value.items():
+                    print(f"{key}: {item}")
+            return 0
+        rows = [
+            {
+                "key": key,
+                "display": syringe_display_name(key, record),
+                "calibration_status": calibration_basis(record)["kind"],
+                "nominal_volume_ml": record.get("nominal_volume_ml"),
+                "active": bool(record.get("active", True)),
+            }
+            for key, record in sorted(records.items())
+        ]
+        if args.command == "syringe-library-status":
+            counts = {
+                kind: sum(row["calibration_status"] == kind for row in rows)
+                for kind in ("calibrated", "nominal_only", "calibration_stale", "missing")
+            }
+            value = {
+                "schema_version": document.get("schema_version", 1),
+                "total": len(rows),
+                "active": sum(row["active"] for row in rows),
+                "counts": counts,
+            }
+            if args.json:
+                print(json.dumps(value, ensure_ascii=True, indent=2))
+            else:
+                print(f"syringes: {value['total']} (active {value['active']})")
+                for key, count in counts.items():
+                    print(f"{key}: {count}")
+        elif args.json:
+            print(json.dumps(rows, ensure_ascii=True, indent=2))
+        else:
+            for row in rows:
+                print(
+                    f"{row['key']}\t{row['display']}\t{row['calibration_status']}\t"
+                    f"{'active' if row['active'] else 'inactive'}"
+                )
+        return 0
+
     if args.command == "diagnostics-summary":
         summary = diagnostics_summary(resolution)
         if args.json:
@@ -431,6 +501,8 @@ def dispatch(args: argparse.Namespace) -> int:
     elif args.command == "calc":
         syringe = data["syringes"][args.syringe]
         ul_per_mm = syringe.get("calibrated_ul_per_mm")
+        if ul_per_mm is None:
+            ul_per_mm = syringe.get("nominal_ul_per_mm")
         if ul_per_mm is None:
             ul_per_mm = ul_per_mm_from_inner_diameter(syringe["nominal_inner_diameter_mm"])
         result = calculate(

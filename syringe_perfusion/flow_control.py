@@ -50,6 +50,8 @@ class PerfusionSetpoint:
 def calibrated_ul_per_mm(syringe: dict[str, Any]) -> float:
     value = syringe.get("calibrated_ul_per_mm")
     if value is None:
+        value = syringe.get("nominal_ul_per_mm")
+    if value is None:
         value = ul_per_mm_from_inner_diameter(float(syringe["nominal_inner_diameter_mm"]))
     value = float(value)
     if value <= 0:
@@ -158,9 +160,20 @@ def build_perfusion_setpoint(
         out_flow,
         programmed_duration,
     )
-    warning = ""
+    from .syringe_library import validate_large_syringe_use
+
+    warnings: list[str] = []
+    for record, result in ((in_syringe, in_result), (out_syringe, out_result)):
+        warnings.extend(
+            validate_large_syringe_use(
+                record,
+                required_travel_mm=result.programmed_speed_mm_min * programmed_duration / 60.0,
+                speed_mm_min=result.programmed_speed_mm_min,
+                duration_s=programmed_duration,
+            )
+        )
     if abs(out_flow - in_flow_ml_min) > 1e-12:
-        warning = "Unequal IN/OUT flow can change dish volume."
+        warnings.append("Unequal IN/OUT flow can change dish volume.")
     return PerfusionSetpoint(
         mode=mode,
         requested_in_flow_ml_min=in_flow_ml_min,
@@ -174,7 +187,7 @@ def build_perfusion_setpoint(
         requested_start_delay_s=requested_start_delay_s,
         in_setpoint=in_result,
         out_setpoint=out_result,
-        warning=warning,
+        warning=" ".join(dict.fromkeys(warnings)),
     )
 
 

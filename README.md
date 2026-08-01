@@ -1,6 +1,6 @@
 # A4 Syringe Pump Control
 
-Release candidate: 0.2.0-beta.4 (`0.2.0b4` package metadata)
+Release candidate: 0.2.0-beta.5 (`0.2.0b5` package metadata)
 GUI: Tkinter/ttk + clam theme + custom Style  
 Control: USB-TTL UART  
 Distribution: PyInstaller one-folder  
@@ -17,6 +17,10 @@ Setup内の **Commissioning** workspaceは、port identity、物理方向、Emer
 GUIは日本語と英語に対応します。表示言語は左サイドバーまたはSetupから `自動 / Auto`、`日本語`、`English` を選択でき、`%LOCALAPPDATA%\A4PumpControl\settings.json` のUI設定だけに保存されます。Autoは日本語Windowsで日本語、それ以外で英語を選びます。切り替えは実行状態、Active Config、設定fingerprint、ARMED、実機検証結果に影響しません。
 
 Experimentは、実際の作業順に沿った4段階のガイド（実験条件、機器設定、顕微鏡・NIS準備、実行）を既定画面にします。進行状況、実験サマリー、現在の主要操作、全停止を固定表示し、詳細内容だけをスクロールします。条件やポートを変更すると後続手順を無効化し、再設定が必要な理由を表示します。履歴は独立した画面、低頻度の機器設定・実機検証・Profile・Calculator・Recipe・診断は「管理・詳細設定」にまとめています。
+
+Experiment左側の **本日の接続 / Daily Setup** は起動後にバックグラウンドでポートを列挙します。LIVEの機器設定・開始には、当日の検索、検出済みIN/OUT、実機識別情報の明示確認、割り当て固定が必要です。日付またはUSB topologyが変わると再確認が必要になります。検索と接続確認はポンプを動かしません。狭い画面ではこのrailは上部の折りたたみカードになります。DRY-RUNの条件編集と計算previewには当日確認を要求しません。
+
+「管理・詳細設定」には物理シリンジ校正ライブラリがあります。JSON/CSVは必ずpreview、validation、conflict choice、明示Applyを経てatomicに保存されます。公称容量は1–150 mLのmetadataであり、校正値の代用ではありません。内径からの値は **Nominal only / 公称値のみ** と表示し、実測 `calibrated_ul_per_mm` が存在する場合だけそれを優先します。詳細は [Physical Syringe Library](docs/SYRINGE_LIBRARY.md) を参照してください。
 
 AdvancedのRecipe workspaceは、広い画面ではBlock Library／Recipe Steps／Inspectorの3ペイン、狭い画面ではInspectorを下段に配置します。Recipe Stepsはコンパクトな表、Inspectorは独立スクロールです。通常操作ボタンは灰色塗り、検証とDRY-RUNは青、保存とPROGRAM / ARMは緑、LIVEはアンバー、全停止は赤で表示します。Profile、Calculator、History、About / Diagnosticsも日本語・英語の構造化表示とレスポンシブ配置を使用します。
 
@@ -54,15 +58,15 @@ GUIで別のActive Configを選んだ場合、CLI省略時のresolverはその�
 
 Experiment is the primary operational screen. Its safe workflow is:
 
-1. Scan ports and select independent IN and OUT devices.
+1. Let the background scan complete, review IN/OUT adapter identity, and lock today's assignments.
 2. Test IN and OUT by opening/closing each port; connection tests send no pump command.
-3. Choose Fixed volume, Fixed duration, or Bounded continuous.
-4. Set IN flow with the exact numeric entry or convenience slider.
-5. Select IN/OUT syringes and review the quantized preview.
-6. Switch from DRY-RUN to LIVE.
-7. Select **PROGRAM / ARM BOTH**.
-8. Confirm **PROGRAMMED — NOT READ BACK**.
-9. Start acquisition and call an armed NIS wrapper.
+3. Select calibrated physical IN/OUT syringes and enter experimental conditions.
+4. Review the quantized preview; nominal estimates are labeled and are not measured calibration.
+5. Switch from DRY-RUN to LIVE.
+6. Select **PROGRAM / ARM BOTH**.
+7. Confirm **PROGRAMMED — NOT READ BACK**.
+8. Prepare acquisition and the armed NIS wrapper.
+9. Run the experiment.
 10. Use GUI **STOP ALL**, Esc, or `pump_stop_all.cmd` to cancel/stop.
 
 The numeric flow entry is authoritative. The 0.1–3.0 mL/min slider, ±0.1 buttons, and preset buttons update preview only; slider movement sends no UART commands and does not rewrite `profiles.json`. An exact value outside the visible slider range is retained when it is within device limits.
@@ -121,6 +125,9 @@ a4ctl.exe --config-dir "<CFG>" stop-all
 a4ctl.exe --config-dir "<CFG>" preflight
 a4ctl.exe --config-dir "<CFG>" validation-status
 a4ctl.exe --config-dir "<CFG>" recent-runs --limit 20
+a4ctl.exe --config-dir "<CFG>" syringe-list
+a4ctl.exe --config-dir "<CFG>" syringe-show terumo_ss05lz_5ml
+a4ctl.exe --config-dir "<CFG>" syringe-library-status
 ```
 
 `start-armed` is always immediate: it sends only the persisted IN-forward and OUT-reverse start commands and does not recalculate or rewrite settings. `schedule-armed --delay-s N` launches a detached worker and returns a run ID promptly. The GUI **GUI START delay sec** field uses this same scheduler when greater than zero; it does not change CLI `start-armed`.
@@ -585,9 +592,9 @@ Main entry points:
 
 ## Development Status
 
-- Release candidate: 0.2.0-beta.4
-- Canonical package version: `pyproject.toml` value `0.2.0b4`
-- Future tag name: `v0.2.0-beta.4` (not created by build scripts)
+- Release candidate: 0.2.0-beta.5
+- Canonical package version: `pyproject.toml` value `0.2.0b5`
+- Future tag name: `v0.2.0-beta.5` (not created by build scripts)
 - Tests: run `python -m pytest -q` to verify the current checkout
 - GUI/CLI one-folder build and NIS wrapper DRY-RUN confirmed
 - Live pump control and actual NIS `Int_ExecProgram` behavior require hardware validation
@@ -599,7 +606,7 @@ Main entry points:
 
 ## Build identity and diagnostics
 
-`pyproject.toml` is the single package-version source. GUI, CLI, commissioning records, reports, build metadata, and artifacts derive the human form `0.2.0-beta.4` from PEP 440 `0.2.0b4`. Frozen builds read `_internal\build_info.json` and never invoke Git at startup. Build metadata is informational and never bypasses preflight or safety checks.
+`pyproject.toml` is the single package-version source. GUI, CLI, commissioning records, reports, build metadata, and artifacts derive the human form `0.2.0-beta.5` from PEP 440 `0.2.0b5`. Frozen builds read `_internal\build_info.json` and never invoke Git at startup. Build metadata is informational and never bypasses preflight or safety checks.
 
 Read-only diagnostics:
 
@@ -613,6 +620,7 @@ The diagnostic ZIP includes sanitized build/config/preflight/runtime/validation 
 
 ## Version History
 
+- 0.2.0-beta.5: persistent daily port-assignment rail, identity-aware LIVE prerequisite, and importable physical-syringe calibration library through 150 mL. Control compatibility remains 1. Beta.4 is superseded for routine HIL use because it did not enforce daily adapter review or provide traceable syringe-library interchange.
 - 0.2.0-beta.4: guided four-step experiment workflow, simplified top-level navigation, persistent progress and experiment summary, and explicit NIS preparation. Control compatibility remains 1. Beta.3 is superseded for routine HIL operation because the primary screen exposed too many independent settings at once.
 - 0.2.0-beta.3: responsive Recipe workspace, visible button hierarchy, localized Profile/Calculator/History/About displays, and clearer fault/OUT-disabled presentation. Control compatibility remains 1. Beta.2 is superseded for HIL use because Recipe and secondary-screen usability remained incomplete.
 - 0.2.0-beta.2: Experiment viewport accessibility and complete Japanese/English GUI localization. Control compatibility remains 1.

@@ -6,11 +6,15 @@ import tkinter as tk
 from syringe_perfusion.gui import A4PumpApp
 
 
-def make_app() -> A4PumpApp:
+def make_app(*, auto_scan: bool = False) -> A4PumpApp:
     last_exc: tk.TclError | None = None
     for _attempt in range(3):
         try:
-            app = A4PumpApp()
+            app = A4PumpApp(
+                daily_setup_record={},
+                persist_daily_setup=False,
+                auto_scan=auto_scan,
+            )
             # Existing GUI behavior tests use stable English labels regardless
             # of the developer workstation UI locale.
             app.localizer.set_preference("en")
