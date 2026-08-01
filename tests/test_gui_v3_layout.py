@@ -41,21 +41,22 @@ def test_recipe_builder_has_three_panes_and_toolbar() -> None:
     try:
         recipe_tab = app.recipe_tab
         assert hasattr(recipe_tab, "library_frame")
-        assert hasattr(recipe_tab, "steps_scroll")
-        assert recipe_tab.step_cards
+        assert hasattr(recipe_tab, "steps_tree")
+        assert recipe_tab.steps_tree.get_children()
+        assert hasattr(recipe_tab, "inspector_scroll")
         assert hasattr(recipe_tab, "prop_pump_combo")
-        assert recipe_tab.recipe_status_var.get().startswith("1 blocks")
+        assert recipe_tab.recipe_status_var.get().startswith("1 step")
     finally:
         app.destroy()
 
 
-def test_recipe_builder_step_card_operations_work() -> None:
+def test_recipe_builder_tree_operations_work() -> None:
     app = make_app()
     try:
         recipe_tab = app.recipe_tab
         recipe_tab.add_block("wait")
         assert len(recipe_tab.blocks) == 2
-        assert len(recipe_tab.step_cards) == 2
+        assert len(recipe_tab.steps_tree.get_children()) == 2
         recipe_tab.select_step(1)
         recipe_tab.move_up()
         assert recipe_tab.selected_index() == 0

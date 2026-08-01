@@ -2,7 +2,7 @@
 
 This guide makes controlled bench validation reproducible. It does not claim that any pump, tubing path, microscope, or NIS workstation has been physically validated.
 
-For hardware-in-the-loop work, use 0.2.0-beta.2 or later. Beta.1 is superseded because the initial Experiment viewport could make lower controls inaccessible. Beta.2 changes viewport and localization only; control compatibility remains `1`.
+For hardware-in-the-loop work, use 0.2.0-beta.3 or later. Beta.1 is superseded because the initial Experiment viewport could make lower controls inaccessible. Beta.2 is superseded because Recipe and secondary-screen usability remained incomplete at normal and high-DPI sizes. Beta.3 changes GUI layout, localization, and presentation only; control compatibility remains `1`.
 
 The GUI supports 日本語 and English. On a Japanese Windows UI, `自動 / Auto` selects Japanese unless an explicit language was saved. Language switching changes display text only: internal states, UART previews, Active Config, ARMED plans, commissioning evidence, and calibration values remain canonical. Experiment keeps primary actions and global 全停止 visible while dashboard details scroll.
 

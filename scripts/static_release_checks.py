@@ -46,6 +46,12 @@ def main() -> int:
         text = test.read_text(encoding="utf-8", errors="replace")
         if re.search(r"\bserial\.Serial\s*\(", text):
             errors.append(f"test may open a real serial port: {test.name}")
+    recipe_gui = (ROOT / "syringe_perfusion" / "gui_recipe.py").read_text(encoding="utf-8")
+    direct_operator_literal = re.compile(r"(?:text|title)\s*=\s*['\"][A-Za-z][^'\"]*['\"]")
+    if direct_operator_literal.search(recipe_gui):
+        errors.append("Recipe GUI contains a direct operator-facing English text/title literal")
+    if "bind_literal_tree" in recipe_gui:
+        errors.append("Recipe GUI must use explicit localization keys, not bind_literal_tree")
     if errors:
         raise SystemExit("\n".join(errors))
     print("Static release safety checks passed.")

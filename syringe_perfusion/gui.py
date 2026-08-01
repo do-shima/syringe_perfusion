@@ -123,6 +123,7 @@ class A4PumpApp(tk.Tk):
 
         self.syringe_var = tk.StringVar(value="terumo_ss05lz_5ml")
         self.calc_mode_var = tk.StringVar(value="volume_duration")
+        self.calc_mode_display_var = tk.StringVar(value=self.localizer.display_value("volume_duration"))
         self.volume_var = tk.StringVar(value="1000")
         self.duration_var = tk.StringVar(value="30")
         self.flow_var = tk.StringVar(value="2.0")
@@ -133,7 +134,10 @@ class A4PumpApp(tk.Tk):
         self.last_calc_result: dict[str, Any] | None = None
 
         self.profile_var = tk.StringVar(value="fast30_1ml")
+        self.profile_display_var = tk.StringVar(value="")
         self.profile_result_var = tk.StringVar(value="")
+        self.profile_commands_var = tk.StringVar(value="")
+        self._profile_commands_visible = False
         self.profile_write_pump_var = tk.StringVar(value="IN")
         self.profile_save_after_write_var = tk.BooleanVar(value=True)
         self.profile_start_after_write_var = tk.BooleanVar(value=False)
@@ -155,6 +159,7 @@ class A4PumpApp(tk.Tk):
             value=bool(ui.get("require_current_commissioning", False))
         )
         self._commissioning_acknowledged = False
+        self._acknowledged_fault_signature = ""
         self.validation_store = ValidationStore(self.config_resolution)
         self.perfusion_mode_var = tk.StringVar(value="fixed_volume")
         self.in_flow_var = tk.StringVar(value="2.0")
@@ -365,7 +370,6 @@ class A4PumpApp(tk.Tk):
             status,
             text=self.t("action.stop_all_esc"),
             style="Danger.TButton",
-            takefocus=False,
             command=self.gui_stop_all_now,
         )
         self.global_stop_button.grid(row=0, column=1, sticky="e", padx=(12, 0))
@@ -387,7 +391,6 @@ class A4PumpApp(tk.Tk):
                 parent,
                 text=self.t(text_key),
                 style="Nav.TButton",
-                takefocus=False,
                 command=lambda page=key: self.select_page(page),
             )
             button.grid(row=row, column=0, sticky="ew", pady=3)
@@ -521,7 +524,7 @@ class A4PumpApp(tk.Tk):
             self.set_status(f"Operation already running: {self._active_operation}")
             return False
         self._active_operation = name
-        self.update_runtime_controls(self.perfusion_state_var.get())
+        self.update_runtime_controls(self._operational_state)
         return True
 
     def finish_gui_operation(self, name: str) -> None:
@@ -592,7 +595,6 @@ class A4PumpApp(tk.Tk):
             actions,
             text=self.t("action.program_arm"),
             style="Success.TButton",
-            takefocus=False,
             command=self.program_arm_gui,
         )
         self.experiment_write_button.grid(row=2, column=1, sticky="ew", padx=4, pady=(4, 0))
@@ -600,7 +602,6 @@ class A4PumpApp(tk.Tk):
             actions,
             text=self.t("action.start_armed"),
             style="Primary.TButton",
-            takefocus=False,
             command=self.start_armed_gui,
         )
         self.experiment_start_button.grid(row=2, column=2, sticky="ew", padx=4, pady=(4, 0))
@@ -608,7 +609,6 @@ class A4PumpApp(tk.Tk):
             actions,
             text=self.t("action.stop_all"),
             style="Danger.TButton",
-            takefocus=False,
             command=self.gui_stop_all_now,
         )
         self.experiment_stop_button.grid(row=2, column=3, sticky="ew", padx=(4, 0), pady=(4, 0))
@@ -655,6 +655,8 @@ class A4PumpApp(tk.Tk):
         self.dashboard_plan_var = tk.StringVar(value="")
         self.dashboard_safety_var = tk.StringVar(value="")
         self.dashboard_timing_var = tk.StringVar(value="")
+        self.dashboard_fault_raw_var = tk.StringVar(value="")
+        self._fault_details_visible = False
         for row, variable, style in (
             (6, self.dashboard_identity_var, "Card.TLabel"),
             (7, self.dashboard_plan_var, "Card.TLabel"),
@@ -665,6 +667,29 @@ class A4PumpApp(tk.Tk):
             label._responsive_wrap_margin = 24  # type: ignore[attr-defined]
             label.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(2, 0))
             self.dashboard_detail_labels.append(label)
+        self.dashboard_fault_actions = ttk.Frame(shared, style="Card.TFrame")
+        self.dashboard_fault_actions.grid(row=10, column=0, columnspan=3, sticky="ew", pady=(5, 0))
+        self.fault_ack_button = ttk.Button(
+            self.dashboard_fault_actions,
+            text=self.t("fault.acknowledge"),
+            style="NeutralCompact.TButton",
+            command=self.acknowledge_historical_fault,
+        )
+        self.fault_details_button = ttk.Button(
+            self.dashboard_fault_actions,
+            text=self.t("fault.technical_details"),
+            style="NeutralCompact.TButton",
+            command=self.toggle_fault_details,
+        )
+        self.fault_details_button.pack(side="left")
+        self.fault_raw_label = ttk.Label(
+            shared,
+            textvariable=self.dashboard_fault_raw_var,
+            style="Subtitle.TLabel",
+            justify="left",
+            anchor="w",
+        )
+        self.fault_raw_label._responsive_wrap_margin = 24  # type: ignore[attr-defined]
 
         setpoint = create_card(content, self.t("card.perfusion_setpoint"), "Numeric IN flow is authoritative; slider range is a UI preference.")
         setpoint.grid(row=1, column=0, sticky="nsew", padx=(0, 4), pady=(0, 8))
@@ -823,6 +848,9 @@ class A4PumpApp(tk.Tk):
             self.programmed_message_label.grid(row=2, column=2, sticky="ew")
             for row, label in enumerate(self.dashboard_detail_labels, start=3):
                 label.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(2, 0))
+            self.dashboard_fault_actions.grid(row=10, column=0, columnspan=3, sticky="ew", pady=(5, 0))
+            if self._fault_details_visible:
+                self.fault_raw_label.grid(row=11, column=0, columnspan=3, sticky="ew", pady=(3, 0))
         else:
             content.columnconfigure(0, weight=1, uniform="")
             content.columnconfigure(1, weight=0, uniform="")
@@ -835,6 +863,9 @@ class A4PumpApp(tk.Tk):
             self.programmed_message_label.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(2, 0))
             for row, label in enumerate(self.dashboard_detail_labels, start=4):
                 label.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(2, 0))
+            self.dashboard_fault_actions.grid(row=11, column=0, columnspan=3, sticky="ew", pady=(5, 0))
+            if self._fault_details_visible:
+                self.fault_raw_label.grid(row=12, column=0, columnspan=3, sticky="ew", pady=(3, 0))
 
         buttons = (
             self.scan_ports_button,
@@ -870,6 +901,14 @@ class A4PumpApp(tk.Tk):
         if canonical is not None:
             self.perfusion_mode_var.set(canonical)
 
+    def _on_calc_mode_display_selected(self, _event: tk.Event[Any] | None = None) -> None:
+        canonical = self.localizer.canonical_value(
+            self.calc_mode_display_var.get(),
+            ("volume_duration", "volume_flow", "speed_duration"),
+        )
+        if canonical is not None:
+            self.calc_mode_var.set(canonical)
+
     def _on_language_selected(self, _event: tk.Event[Any] | None = None) -> None:
         preference = self.localizer.language_preference_from_display(self.language_display_var.get())
         if preference is None:
@@ -895,6 +934,21 @@ class A4PumpApp(tk.Tk):
             modes = ("fixed_volume", "fixed_duration", "bounded_continuous")
             self.perfusion_mode_combo.configure(values=tuple(self.localizer.display_value(value) for value in modes))
             self.perfusion_mode_display_var.set(self.localizer.display_value(self.perfusion_mode_var.get()))
+        if hasattr(self, "calc_mode_combo"):
+            modes = ("volume_duration", "volume_flow", "speed_duration")
+            self.calc_mode_combo.configure(values=tuple(self.localizer.display_value(value) for value in modes))
+            self.calc_mode_display_var.set(self.localizer.display_value(self.calc_mode_var.get()))
+            self.calc_result_var.set(
+                self.format_result(self.last_calc_result) if self.last_calc_result is not None else self.t("calculator.empty")
+            )
+            self.update_calculator_write_label()
+        if hasattr(self, "profile_combo"):
+            self._refresh_profile_display_values()
+            self.update_profile_info()
+            self.profile_commands_button.configure(
+                text=self.t("profile.hide_commands" if self._profile_commands_visible else "profile.show_commands")
+            )
+            self.profile_start_after_write_check.configure(text=self.t("profile.start_after_dry"))
         if hasattr(self, "global_stop_button"):
             self.global_stop_button.configure(text=self.t("action.stop_all_esc"))
         for key, label_key in (
@@ -919,6 +973,10 @@ class A4PumpApp(tk.Tk):
             refresh_language = getattr(child, "refresh_language", None)
             if callable(refresh_language):
                 refresh_language()
+        if hasattr(self, "fault_ack_button"):
+            self.fault_ack_button.configure(text=self.t("fault.acknowledge"))
+            self.fault_details_button.configure(text=self.t("fault.technical_details"))
+        self.update_primary_arm_label()
         self.localizer.refresh_bindings()
         self.localizer.bind_literal_tree(self)
         self.perfusion_state_var.set(self.localizer.state_label(self._operational_state))
@@ -1071,7 +1129,7 @@ class A4PumpApp(tk.Tk):
             widget.grid(row=0, column=base + 1, sticky="ew", padx=3)
 
         buttons = ttk.Frame(card, style="Card.TFrame")
-        buttons.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        buttons.grid(row=10, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         actions = (
             ("Scan ports", self.scan_ports_async),
             ("Save pump settings", self.save_pump_settings_gui),
@@ -1113,7 +1171,7 @@ class A4PumpApp(tk.Tk):
         )
         action_card = create_card(parent, "Quick actions", "Common safety operations.")
         action_card.grid(row=1, column=1, sticky="nsew", padx=(8, 0), pady=(0, 12))
-        ttk.Button(action_card, text="STOP ALL", style="Danger.TButton", takefocus=False, command=self.gui_stop_all_now).grid(
+        ttk.Button(action_card, text="STOP ALL", style="Danger.TButton", command=self.gui_stop_all_now).grid(
             row=2, column=0, sticky="ew", pady=(10, 0)
         )
         self.update_dashboard()
@@ -1145,11 +1203,11 @@ class A4PumpApp(tk.Tk):
         ttk.Label(manual, text="Auto stop after ms", style="Card.TLabel").grid(row=2, column=2, sticky="w", padx=4, pady=4)
         ttk.Entry(manual, textvariable=self.hold_auto_stop_ms_var, width=10).grid(row=2, column=3, sticky="ew", padx=4, pady=4)
 
-        hold_forward = ttk.Button(manual, text="Hold forward", style="Primary.TButton", takefocus=False)
-        hold_reverse = ttk.Button(manual, text="Hold reverse", style="Primary.TButton", takefocus=False)
+        hold_forward = ttk.Button(manual, text="Hold forward", style="Warning.TButton")
+        hold_reverse = ttk.Button(manual, text="Hold reverse", style="Warning.TButton")
         hold_forward.grid(row=3, column=0, sticky="ew", padx=4, pady=4)
         hold_reverse.grid(row=3, column=1, sticky="ew", padx=4, pady=4)
-        ttk.Button(manual, text="Stop", style="DangerSecondary.TButton", takefocus=False, command=self.manual_stop_selected).grid(
+        ttk.Button(manual, text="Stop", style="DangerSecondary.TButton", command=self.manual_stop_selected).grid(
             row=3, column=2, columnspan=2, sticky="ew", padx=4, pady=4
         )
 
@@ -1162,8 +1220,8 @@ class A4PumpApp(tk.Tk):
 
         ttk.Label(manual, text="Jog duration ms", style="Card.TLabel").grid(row=4, column=0, sticky="w", padx=4, pady=4)
         ttk.Entry(manual, textvariable=self.jog_duration_var, width=10).grid(row=4, column=1, sticky="ew", padx=4, pady=4)
-        jog_forward = ttk.Button(manual, text="Jog forward", style="Secondary.TButton", takefocus=False, command=lambda: self.start_jog("forward"))
-        jog_reverse = ttk.Button(manual, text="Jog reverse", style="Secondary.TButton", takefocus=False, command=lambda: self.start_jog("reverse"))
+        jog_forward = ttk.Button(manual, text="Jog forward", style="Warning.TButton", command=lambda: self.start_jog("forward"))
+        jog_reverse = ttk.Button(manual, text="Jog reverse", style="Warning.TButton", command=lambda: self.start_jog("reverse"))
         jog_forward.grid(row=4, column=2, sticky="ew", padx=4, pady=4)
         jog_reverse.grid(row=4, column=3, sticky="ew", padx=4, pady=4)
         self._jog_buttons = [jog_forward, jog_reverse]
@@ -1184,14 +1242,13 @@ class A4PumpApp(tk.Tk):
         )
         ttk.Button(
             safety,
-            text="Test all",
-            style="Secondary.TButton",
-            takefocus=False,
+            text=self.t("setup.connection_test_all"),
+            style="Neutral.TButton",
             command=lambda: self.connection_test_async(),
         ).grid(
             row=2, column=1, sticky="ew", padx=6, pady=(8, 0)
         )
-        ttk.Button(safety, text="STOP ALL", style="Danger.TButton", takefocus=False, command=self.gui_stop_all_now).grid(
+        ttk.Button(safety, text="STOP ALL", style="Danger.TButton", command=self.gui_stop_all_now).grid(
             row=2, column=2, sticky="ew", pady=(8, 0)
         )
         self.pump_log = self._make_log_box(parent, row=3, columnspan=2)
@@ -1244,9 +1301,8 @@ class A4PumpApp(tk.Tk):
         baud_value.grid(row=6, column=1, sticky="w", padx=4, pady=4)
         test_button = ttk.Button(
             card,
-            text=f"Test {pump_key}",
-            style="Secondary.TButton",
-            takefocus=False,
+            text=self.t("setup.connection_test_pump", pump=pump_key),
+            style="Neutral.TButton",
             command=lambda key=pump_key: self.connection_test_async(key),
         )
         test_button.grid(
@@ -1255,18 +1311,18 @@ class A4PumpApp(tk.Tk):
         if pump_key == "OUT":
             self.out_detail_widgets.extend([baud_label, baud_value, test_button])
         if pump_key == "IN":
-            ttk.Button(card, text="Start forward", style="Primary.TButton", takefocus=False, command=lambda: self.gui_send_async("IN", "start-forward")).grid(
+            ttk.Button(card, text="Start forward", style="Warning.TButton", command=lambda: self.gui_send_async("IN", "start-forward")).grid(
                 row=8, column=0, sticky="ew", padx=4, pady=4
             )
-            ttk.Button(card, text="Stop", style="DangerSecondary.TButton", takefocus=False, command=lambda: self.gui_send_async("IN", "stop")).grid(
+            ttk.Button(card, text="Stop", style="DangerSecondary.TButton", command=lambda: self.gui_send_async("IN", "stop")).grid(
                 row=8, column=1, columnspan=2, sticky="ew", padx=4, pady=4
             )
         else:
-            self.out_start_forward_button = ttk.Button(card, text="Start forward", style="Primary.TButton", takefocus=False, command=lambda: self.gui_send_async("OUT", "start-forward"))
+            self.out_start_forward_button = ttk.Button(card, text="Start forward", style="Warning.TButton", command=lambda: self.gui_send_async("OUT", "start-forward"))
             self.out_start_forward_button.grid(row=8, column=0, sticky="ew", padx=4, pady=4)
-            self.out_start_reverse_button = ttk.Button(card, text="Start reverse", style="Primary.TButton", takefocus=False, command=lambda: self.gui_send_async("OUT", "start-reverse"))
+            self.out_start_reverse_button = ttk.Button(card, text="Start reverse", style="Warning.TButton", command=lambda: self.gui_send_async("OUT", "start-reverse"))
             self.out_start_reverse_button.grid(row=8, column=1, sticky="ew", padx=4, pady=4)
-            self.out_stop_button = ttk.Button(card, text="Stop", style="DangerSecondary.TButton", takefocus=False, command=lambda: self.gui_send_async("OUT", "stop"))
+            self.out_stop_button = ttk.Button(card, text="Stop", style="DangerSecondary.TButton", command=lambda: self.gui_send_async("OUT", "stop"))
             self.out_stop_button.grid(row=8, column=2, sticky="ew", padx=4, pady=4)
             self.out_detail_widgets.extend(
                 [self.out_start_forward_button, self.out_start_reverse_button, self.out_stop_button]
@@ -1283,6 +1339,10 @@ class A4PumpApp(tk.Tk):
         result_card = create_card(parent, "Result", "Latest calculation.")
         result_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=(0, 12))
         result_card.columnconfigure(0, weight=1)
+        self.calc_layout_parent = parent
+        self.calc_input_card = input_card
+        self.calc_result_card = result_card
+        parent.bind("<Configure>", lambda _event: self.after_idle(self._apply_advanced_responsive_layout), add="+")
 
         ttk.Label(input_card, text="Syringe preset", style="Card.TLabel").grid(row=2, column=0, sticky="w", pady=4)
         self.syringe_combo = ttk.Combobox(
@@ -1295,12 +1355,14 @@ class A4PumpApp(tk.Tk):
         self.syringe_info.grid(row=3, column=0, columnspan=2, sticky="w", pady=4)
 
         ttk.Label(input_card, text="Input mode", style="Card.TLabel").grid(row=4, column=0, sticky="w", pady=4)
-        ttk.Combobox(
+        self.calc_mode_combo = ttk.Combobox(
             input_card,
-            textvariable=self.calc_mode_var,
-            values=["volume_duration", "volume_flow", "speed_duration"],
+            textvariable=self.calc_mode_display_var,
+            values=(),
             state="readonly",
-        ).grid(row=4, column=1, sticky="ew", pady=4)
+        )
+        self.calc_mode_combo.grid(row=4, column=1, sticky="ew", pady=4)
+        self.calc_mode_combo.bind("<<ComboboxSelected>>", self._on_calc_mode_display_selected, add="+")
 
         fields = [
             ("Target volume uL", self.volume_var),
@@ -1312,14 +1374,18 @@ class A4PumpApp(tk.Tk):
             ttk.Label(input_card, text=label, style="Card.TLabel").grid(row=idx, column=0, sticky="w", pady=4)
             ttk.Entry(input_card, textvariable=var).grid(row=idx, column=1, sticky="ew", pady=4)
 
-        ttk.Button(input_card, text="Calculate", style="Primary.TButton", takefocus=False, command=self.calculate_gui).grid(
+        ttk.Button(input_card, text="Calculate", style="Primary.TButton", command=self.calculate_gui).grid(
             row=9, column=0, columnspan=2, sticky="ew", pady=(10, 0)
         )
-        ttk.Label(result_card, textvariable=self.calc_result_var, justify="left", style="Value.TLabel").grid(
+        self.calc_result_var.set(self.t("calculator.empty"))
+        self.calc_result_label = ttk.Label(result_card, textvariable=self.calc_result_var, justify="left", style="Card.TLabel")
+        self.calc_result_label._responsive_wrap_margin = 16  # type: ignore[attr-defined]
+        self.calc_result_label.grid(
             row=2, column=0, sticky="nw", pady=(10, 0)
         )
 
         calc_write = create_card(parent, "Write-to-A4", "Write the latest calculated speed/time to the selected pump.")
+        self.calc_write_card = calc_write
         calc_write.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 12))
         for col in range(4):
             calc_write.columnconfigure(col, weight=1)
@@ -1336,15 +1402,15 @@ class A4PumpApp(tk.Tk):
         )
         self.calc_write_button = ttk.Button(
             calc_write,
-            text="Write calculated settings to A4",
+            text=self.t("calculator.write", pump=self.calc_write_pump_var.get(), mode=self.t("label.dry_run")),
             style="Success.TButton",
-            takefocus=False,
             command=self.write_calculated_settings_async,
         )
         self.calc_write_button.grid(
             row=2, column=3, sticky="ew", padx=4, pady=4
         )
         self.calc_write_button.configure(state="disabled")
+        self.calc_write_pump_combo.bind("<<ComboboxSelected>>", lambda _event: self.update_calculator_write_label(), add="+")
 
     def _build_profile_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
@@ -1356,18 +1422,40 @@ class A4PumpApp(tk.Tk):
         preview_card = create_card(parent, "Calculated settings preview", "Commands are lowercase and terminated with CRLF.")
         preview_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=(0, 12))
         preview_card.columnconfigure(0, weight=1)
+        self.profile_layout_parent = parent
+        self.profile_select_card = select_card
+        self.profile_preview_card = preview_card
+        parent.bind("<Configure>", lambda _event: self.after_idle(self._apply_advanced_responsive_layout), add="+")
 
         ttk.Label(select_card, text="Profile preset", style="Card.TLabel").grid(row=2, column=0, sticky="w", pady=4)
         self.profile_combo = ttk.Combobox(
-            select_card, textvariable=self.profile_var, values=profile_keys, state="readonly"
+            select_card, textvariable=self.profile_display_var, values=(), state="readonly"
         )
         self.profile_combo.grid(row=2, column=1, sticky="ew", pady=4)
-        self.profile_combo.bind("<<ComboboxSelected>>", lambda _e: self.update_profile_info())
+        self.profile_combo.bind("<<ComboboxSelected>>", self._on_profile_display_selected, add="+")
 
-        ttk.Label(preview_card, textvariable=self.profile_result_var, justify="left", style="Value.TLabel").grid(
+        self.profile_result_label = ttk.Label(preview_card, textvariable=self.profile_result_var, justify="left", style="Card.TLabel")
+        self.profile_result_label._responsive_wrap_margin = 16  # type: ignore[attr-defined]
+        self.profile_result_label.grid(
             row=2, column=0, sticky="nw", pady=(10, 0)
         )
+        self.profile_commands_button = ttk.Button(
+            preview_card,
+            text=self.t("profile.show_commands"),
+            style="NeutralCompact.TButton",
+            command=self.toggle_profile_commands,
+        )
+        self.profile_commands_button.grid(row=3, column=0, sticky="w", pady=(8, 0))
+        self.profile_commands_label = ttk.Label(
+            preview_card,
+            textvariable=self.profile_commands_var,
+            justify="left",
+            style="Subtitle.TLabel",
+            font=("Consolas", 9),
+        )
+        self.profile_commands_label._responsive_wrap_margin = 16  # type: ignore[attr-defined]
         write_frame = create_card(parent, "Write settings to A4", "Default writes and saves only. Start after write is explicit.")
+        self.profile_write_card = write_frame
         write_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 12))
         for col in range(4):
             write_frame.columnconfigure(col, weight=1)
@@ -1382,23 +1470,96 @@ class A4PumpApp(tk.Tk):
         ttk.Checkbutton(write_frame, text="Save after write", variable=self.profile_save_after_write_var, style="Card.TCheckbutton").grid(
             row=2, column=2, sticky="w", padx=4, pady=4
         )
-        ttk.Checkbutton(write_frame, text="Start after write", variable=self.profile_start_after_write_var, style="Card.TCheckbutton").grid(
+        self.profile_start_after_write_check = ttk.Checkbutton(
+            write_frame,
+            text=self.t("profile.start_after_dry"),
+            variable=self.profile_start_after_write_var,
+            style="Card.TCheckbutton",
+        )
+        self.profile_start_after_write_check.grid(
             row=2, column=3, sticky="w", padx=4, pady=4
         )
         ttk.Label(
             write_frame,
-            text="Only starts the pump after settings are written.",
+            text=self.t("profile.start_explicit"),
             style="Subtitle.TLabel",
         ).grid(row=3, column=0, columnspan=4, sticky="w", padx=4, pady=(0, 4))
         self.profile_write_button = ttk.Button(
             write_frame,
             text="Write settings to A4",
             style="Success.TButton",
-            takefocus=False,
             command=self.write_profile_settings_async,
         )
         self.profile_write_button.grid(row=4, column=0, columnspan=4, sticky="ew", padx=4, pady=(8, 4))
         self.profile_log = self._make_log_box(parent, row=2, columnspan=2)
+        self.after_idle(self._refresh_profile_display_values)
+
+    def _apply_advanced_responsive_layout(self) -> None:
+        if hasattr(self, "profile_layout_parent"):
+            width = max(1, self.profile_layout_parent.winfo_width())
+            wide = width >= 760
+            self.profile_select_card.grid_forget()
+            self.profile_preview_card.grid_forget()
+            self.profile_write_card.grid_forget()
+            if wide:
+                self.profile_layout_mode = "wide"
+                self.profile_layout_parent.columnconfigure(0, weight=1, minsize=240)
+                self.profile_layout_parent.columnconfigure(1, weight=2, minsize=420)
+                self.profile_select_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=(0, 12))
+                self.profile_preview_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=(0, 12))
+                self.profile_write_card.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+                self.profile_log.grid_configure(row=2, column=0, columnspan=2)
+            else:
+                self.profile_layout_mode = "narrow"
+                self.profile_layout_parent.columnconfigure(0, weight=1, minsize=0)
+                self.profile_layout_parent.columnconfigure(1, weight=0, minsize=0)
+                self.profile_select_card.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+                self.profile_preview_card.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+                self.profile_write_card.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+                self.profile_log.grid_configure(row=3, column=0, columnspan=2)
+        if hasattr(self, "calc_layout_parent"):
+            width = max(1, self.calc_layout_parent.winfo_width())
+            wide = width >= 760
+            self.calc_input_card.grid_forget()
+            self.calc_result_card.grid_forget()
+            self.calc_write_card.grid_forget()
+            if wide:
+                self.calc_layout_mode = "wide"
+                self.calc_layout_parent.columnconfigure(0, weight=1, minsize=260)
+                self.calc_layout_parent.columnconfigure(1, weight=2, minsize=380)
+                self.calc_input_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=(0, 12))
+                self.calc_result_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=(0, 12))
+                self.calc_write_card.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+            else:
+                self.calc_layout_mode = "narrow"
+                self.calc_layout_parent.columnconfigure(0, weight=1, minsize=0)
+                self.calc_layout_parent.columnconfigure(1, weight=0, minsize=0)
+                self.calc_input_card.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+                self.calc_result_card.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+                self.calc_write_card.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+
+    def _profile_display(self, key: str) -> str:
+        profile = self.data.get("profiles", {}).get(key, {})
+        name = str(profile.get("display_name", key))
+        return f"{name} [{key}]" if name != key else key
+
+    def _refresh_profile_display_values(self) -> None:
+        values = tuple(self._profile_display(key) for key in self.data.get("profiles", {}))
+        self.profile_combo.configure(values=values)
+        self.profile_display_var.set(self._profile_display(self.profile_var.get()))
+
+    def _on_profile_display_selected(self, _event: tk.Event[Any] | None = None) -> None:
+        display = self.profile_display_var.get()
+        key = next((item for item in self.data.get("profiles", {}) if self._profile_display(item) == display), None)
+        if key is not None:
+            self.profile_var.set(key)
+            self.update_profile_info()
+
+    def update_calculator_write_label(self) -> None:
+        if not hasattr(self, "calc_write_button"):
+            return
+        mode = self.t("label.dry_run") if self.dry_run_var.get() else self.t("label.live")
+        self.calc_write_button.configure(text=self.t("calculator.write", pump=self.calc_write_pump_var.get(), mode=mode))
 
     def _build_run_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
@@ -1436,10 +1597,10 @@ class A4PumpApp(tk.Tk):
         actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 12))
         actions.columnconfigure(0, weight=1)
         actions.columnconfigure(1, weight=1)
-        ttk.Button(actions, text="Start", style="Primary.TButton", takefocus=False, command=self.start_run_mode_async).grid(
+        ttk.Button(actions, text="Start", style="Warning.TButton", command=self.start_run_mode_async).grid(
             row=2, column=0, sticky="ew", padx=(0, 6), pady=(8, 0)
         )
-        ttk.Button(actions, text="STOP ALL", style="Danger.TButton", takefocus=False, command=self.gui_stop_all_now).grid(
+        ttk.Button(actions, text="STOP ALL", style="Danger.TButton", command=self.gui_stop_all_now).grid(
             row=2, column=1, sticky="ew", padx=(6, 0), pady=(8, 0)
         )
         self.run_log = self._make_log_box(parent, row=2, columnspan=2)
@@ -1602,7 +1763,7 @@ class A4PumpApp(tk.Tk):
                 + "\n"
                 + self.t(
                     "preview.pump_line",
-                    role="OUT",
+                    role="OUT" if self.is_pump_enabled("OUT") else self.t("out.preview_disabled"),
                     requested=out_set.requested_flow_ml_min,
                     speed=out_set.programmed_speed_mm_min,
                     actual=out_set.estimated_actual_flow_ml_min,
@@ -1618,7 +1779,9 @@ class A4PumpApp(tk.Tk):
                     outside=outside,
                 )
                 + "\n"
-                f"IN UART: {' '.join(in_set.uart_commands)}\nOUT UART: {' '.join(out_set.uart_commands)}"
+                f"IN UART: {' '.join(in_set.uart_commands)}\n"
+                f"{'OUT UART' if self.is_pump_enabled('OUT') else self.t('out.uart_preview_disabled')}: "
+                f"{' '.join(out_set.uart_commands)}"
             )
         except Exception as exc:
             self.current_perfusion_setpoint = None
@@ -1643,16 +1806,19 @@ class A4PumpApp(tk.Tk):
     def on_same_syringe(self) -> None:
         if self.same_out_syringe_var.get():
             self.out_syringe_var.set(self.in_syringe_var.get())
-        self.out_syringe_combo.configure(state="disabled" if self.same_out_syringe_var.get() else "readonly")
+        self.out_syringe_combo.configure(
+            state="disabled" if not self.is_pump_enabled("OUT") or self.same_out_syringe_var.get() else "readonly"
+        )
         self.schedule_perfusion_preview()
 
     def update_ratio_widgets(self) -> None:
+        out_enabled = self.is_pump_enabled("OUT")
         if hasattr(self, "out_ratio_entry"):
-            self.out_ratio_entry.configure(state="normal" if self.out_ratio_locked_var.get() else "disabled")
+            self.out_ratio_entry.configure(state="normal" if out_enabled and self.out_ratio_locked_var.get() else "disabled")
         if hasattr(self, "independent_out_flow_entry"):
-            self.independent_out_flow_entry.configure(state="disabled" if self.out_ratio_locked_var.get() else "normal")
+            self.independent_out_flow_entry.configure(state="normal" if out_enabled and not self.out_ratio_locked_var.get() else "disabled")
         if hasattr(self, "out_syringe_combo"):
-            self.out_syringe_combo.configure(state="disabled" if self.same_out_syringe_var.get() else "readonly")
+            self.out_syringe_combo.configure(state="readonly" if out_enabled and not self.same_out_syringe_var.get() else "disabled")
 
     def program_arm_gui(self) -> None:
         if self._operation_running:
@@ -1818,6 +1984,7 @@ class A4PumpApp(tk.Tk):
                 self._state_poll_after_id = self.after(400, self.poll_runtime_state)
 
     def update_experiment_dashboard(self, status: dict[str, Any]) -> None:
+        self._dashboard_status_snapshot = status
         plan = status.get("plan") if isinstance(status.get("plan"), dict) else {}
         pumps = plan.get("pumps") if isinstance(plan.get("pumps"), dict) else {}
         detected = {str(item.get("device", "")).casefold() for item in self.detected_ports}
@@ -1849,14 +2016,23 @@ class A4PumpApp(tk.Tk):
             else f"{self.t('label.plan_id')}: {status.get('plan_id', '') or '—'} · "
             f"{self.t('label.run_id')}: {status.get('run_id', '') or '—'}"
         )
-        self.dashboard_plan_var.set(
-            f"{identity_line}\n"
-            f"{self.t('label.in_flow')}: {in_flow} mL/min · {self.t('label.out_flow')}: {out_flow} mL/min · "
-            f"{self.t('label.out_ratio')}: {ratio or self.out_ratio_var.get()}\n"
-            f"{self.t('label.duration')}: {plan.get('programmed_duration_s', '—')} s · "
-            f"{self.t('label.expected_in')}: {in_plan.get('expected_volume_ml', '—')} mL · "
-            f"{self.t('label.expected_out')}: {out_plan.get('expected_volume_ml', '—')} mL"
-        )
+        if self.is_pump_enabled("OUT"):
+            flow_line = (
+                f"{self.t('label.in_flow')}: {in_flow} mL/min · {self.t('label.out_flow')}: {out_flow} mL/min · "
+                f"{self.t('label.out_ratio')}: {ratio or self.out_ratio_var.get()}"
+            )
+            volume_line = (
+                f"{self.t('label.duration')}: {plan.get('programmed_duration_s', '—')} s · "
+                f"{self.t('label.expected_in')}: {in_plan.get('expected_volume_ml', '—')} mL · "
+                f"{self.t('label.expected_out')}: {out_plan.get('expected_volume_ml', '—')} mL"
+            )
+        else:
+            flow_line = f"{self.t('label.in_flow')}: {in_flow} mL/min · {self.t('out.disabled_summary')}"
+            volume_line = (
+                f"{self.t('label.duration')}: {plan.get('programmed_duration_s', '—')} s · "
+                f"{self.t('label.expected_in')}: {in_plan.get('expected_volume_ml', '—')} mL"
+            )
+        self.dashboard_plan_var.set(f"{identity_line}\n{flow_line}\n{volume_line}")
         now_epoch = datetime.now().astimezone().timestamp()
         pending = status.get("pending") if isinstance(status.get("pending"), dict) else {}
         scheduled = pending.get("scheduled_for", "")
@@ -1880,15 +2056,59 @@ class A4PumpApp(tk.Tk):
             detected_ports=self.detected_ports,
             dry_run=self.dry_run_var.get(),
         )
+        state = str(status.get("state", "IDLE")).upper()
+        fault_message = str(fault.get("error", "")).strip()
+        fault_timestamp = str(fault.get("at") or fault.get("timestamp") or fault.get("updated_at") or "")
+        signature = f"{fault_timestamp}|{fault_message}"
+        active_fault = state in {"FAULT", "STOP_FAILED"} and bool(fault_message)
+        acknowledged = bool(fault_message) and not active_fault and signature == self._acknowledged_fault_signature
+        if active_fault:
+            fault_line = f"{self.t('fault.current')}: {self.localizer.fault_summary(fault_message)}"
+        elif acknowledged:
+            fault_line = f"{self.t('fault.acknowledged')}: {self.localizer.fault_summary(fault_message)}"
+        elif fault_message:
+            fault_line = f"{self.t('fault.previous')}: {self.localizer.fault_summary(fault_message)}"
+        else:
+            fault_line = self.t("fault.none")
+        if fault_timestamp:
+            fault_line += f" · {fault_timestamp}"
+        self._displayed_fault_signature = signature
+        self.dashboard_fault_raw_var.set(fault_message)
+        if fault_message:
+            self.fault_details_button.pack(side="left")
+        else:
+            self.fault_details_button.pack_forget()
+            self.fault_raw_label.grid_remove()
+            self._fault_details_visible = False
+        if fault_message and not active_fault and not acknowledged:
+            self.fault_ack_button.pack(side="left", padx=(5, 0))
+        else:
+            self.fault_ack_button.pack_forget()
         self.dashboard_safety_var.set(
             f"{self.t('label.commissioning')}: {self.localizer.display_value(validation['status'])} "
             f"({validation['last_completed_at'] or self.t('status.commissioning_incomplete')})\n"
             f"{self.t('label.preflight')}: "
             f"{self.t('status.preflight_summary', blocks=preflight['counts']['BLOCK'], warnings=preflight['counts']['WARN'])}\n"
-            f"{self.t('label.last_fault')}: {fault.get('error', self.t('status.none'))} · "
+            f"{fault_line} · "
             f"{self.t('label.stop_status')}: "
             f"{self.localizer.state_label('STOPPING' if self._stop_in_flight else status.get('state', 'IDLE'))}"
         )
+
+    def acknowledge_historical_fault(self) -> None:
+        status = getattr(self, "_dashboard_status_snapshot", {})
+        if str(status.get("state", "")).upper() in {"FAULT", "STOP_FAILED"}:
+            return
+        self._acknowledged_fault_signature = getattr(self, "_displayed_fault_signature", "")
+        if isinstance(status, dict):
+            self.update_experiment_dashboard(status)
+
+    def toggle_fault_details(self) -> None:
+        self._fault_details_visible = not self._fault_details_visible
+        if self._fault_details_visible and self.dashboard_fault_raw_var.get():
+            row = 11 if getattr(self, "experiment_layout_mode", "wide") == "wide" else 12
+            self.fault_raw_label.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(3, 0))
+        else:
+            self.fault_raw_label.grid_remove()
 
     def save_commissioning_policy(self) -> None:
         try:
@@ -2015,10 +2235,12 @@ class A4PumpApp(tk.Tk):
         pumps = str(resolution.active_pumps_json)
         self.active_config_dir_var.set(active)
         self.active_pumps_path_var.set(pumps)
-        self.config_source_var.set(resolution.source)
-        self.config_writable_var.set("Writable" if resolution.writable else "Read-only")
+        source_key = "setup.source.exe_adjacent" if resolution.source == "exe_adjacent" else "setup.source.custom"
+        self.config_source_var.set(f"{self.t(source_key)} [{resolution.source}]")
+        self.config_writable_var.set(self.localizer.display_value("writable" if resolution.writable else "read_only"))
         self.config_shared_var.set(
-            f"Same directory ({cli_resolution.source})" if shared else f"DIFFERENT: {cli_resolution.active_config_dir}"
+            f"{self.localizer.display_value('same_directory')} [{cli_resolution.source}]"
+            if shared else f"{self.t('status.different_directory')}: {cli_resolution.active_config_dir}"
         )
         self.nis_cfg_var.set(f'set "CFG={active}"')
         self.experiment_config_full_path = active
@@ -2211,7 +2433,8 @@ class A4PumpApp(tk.Tk):
         self._about_dialog = dialog
         dialog.title(self.t("about.title"))
         dialog.transient(self)
-        dialog.geometry("680x500")
+        dialog.geometry("760x540")
+        dialog.minsize(620, 420)
         dialog.columnconfigure(0, weight=1)
         dialog.rowconfigure(1, weight=1)
         ttk.Label(
@@ -2220,51 +2443,76 @@ class A4PumpApp(tk.Tk):
             style="PageTitle.TLabel",
         ).grid(row=0, column=0, sticky="w", padx=16, pady=(16, 8))
         validation_path = self.config_resolution.active_config_dir / "validation"
-        details = {
-            self.t("build.application"): info.get("application_name", ""),
-            self.t("build.release_version"): info.get("human_version", ""),
-            self.t("build.package_version"): info.get("package_version", ""),
-            self.t("build.commit"): info.get("git_commit", ""),
-            self.t("build.build_time"): info.get("build_timestamp_utc", ""),
-            self.t("build.architecture"): info.get("architecture", ""),
-            self.t("build.python"): info.get("python_version", ""),
-            self.t("build.pyinstaller"): info.get("pyinstaller_version", ""),
-            self.t("build.dirty"): info.get("git_dirty"),
-            self.t("build.signing"): info.get("code_signing", "unsigned"),
-            self.t("build.control_compatibility"): info.get("control_compatibility_version", ""),
-            self.t("build.fingerprint"): info.get("build_identity_fingerprint", ""),
-            "Active Config": str(self.config_resolution.active_config_dir),
-            self.t("about.validation_storage"): str(validation_path),
-        }
-        text = tk.Text(dialog, wrap="word", font=("Consolas", 9), height=18)
-        text.grid(row=1, column=0, sticky="nsew", padx=16)
-        text.insert("1.0", "\n".join(f"{key}: {value}" for key, value in details.items()))
-        text.configure(state="disabled")
+        details: list[tuple[str, str]] = [
+            (self.t("build.application"), str(info.get("application_name", ""))),
+            (self.t("build.release_version"), str(info.get("human_version", ""))),
+            (self.t("build.package_version"), str(info.get("package_version", ""))),
+            (self.t("build.commit"), str(info.get("git_commit", ""))),
+            (self.t("build.build_time"), str(info.get("build_timestamp_utc", ""))),
+            (self.t("build.architecture"), str(info.get("architecture", ""))),
+            (self.t("build.python"), str(info.get("python_version", ""))),
+            (self.t("build.pyinstaller"), str(info.get("pyinstaller_version", ""))),
+            (self.t("build.dirty"), str(info.get("git_dirty"))),
+            (self.t("build.signing"), str(info.get("code_signing", "unsigned"))),
+            (self.t("build.control_compatibility"), str(info.get("control_compatibility_version", ""))),
+            (self.t("build.fingerprint"), str(info.get("build_identity_fingerprint", ""))),
+            (self.t("about.active_config"), str(self.config_resolution.active_config_dir)),
+            (self.t("about.validation_storage"), str(validation_path)),
+        ]
+        scroll = ScrollableFrame(dialog, height=350)
+        scroll.grid(row=1, column=0, sticky="nsew", padx=16)
+        scroll.inner.columnconfigure(1, weight=1)
+        dialog._about_value_vars = []  # type: ignore[attr-defined]
+        for row, (key, value) in enumerate(details):
+            ttk.Label(scroll.inner, text=key, style="Card.TLabel").grid(row=row, column=0, sticky="nw", padx=(0, 10), pady=3)
+            value_var = tk.StringVar(value=value)
+            dialog._about_value_vars.append(value_var)  # type: ignore[attr-defined]
+            entry = ttk.Entry(scroll.inner, textvariable=value_var, state="readonly")
+            entry.grid(row=row, column=1, sticky="ew", pady=3)
+            if key in {self.t("about.active_config"), self.t("about.validation_storage"), self.t("build.fingerprint")}:
+                ttk.Button(
+                    scroll.inner,
+                    text=self.t("about.copy_value"),
+                    style="NeutralCompact.TButton",
+                    command=lambda selected=value, label=key: self._copy_text(selected, label),
+                ).grid(row=row, column=2, sticky="ew", padx=(6, 0), pady=3)
+        ttk.Label(scroll.inner, text=self.t("about.details"), style="SectionTitle.TLabel").grid(
+            row=len(details), column=0, columnspan=3, sticky="w", pady=(12, 4)
+        )
+        text = tk.Text(scroll.inner, wrap="none", font=("Consolas", 9), height=6, takefocus=True)
+        text.grid(row=len(details) + 1, column=0, columnspan=3, sticky="ew")
+        text.insert("1.0", "\n".join(f"{key}: {value}" for key, value in details))
+        text.configure(state="disabled", exportselection=False)
+        text.tag_remove("sel", "1.0", "end")
         buttons = ttk.Frame(dialog)
         buttons.grid(row=2, column=0, sticky="ew", padx=16, pady=16)
         for column in range(4):
             buttons.columnconfigure(column, weight=1)
         ttk.Button(
             buttons,
-            text="Copy build identity",
+            text=self.t("action.copy_build"),
+            style="Neutral.TButton",
             command=lambda: self._copy_text(format_build_identity(info), "build identity"),
         ).grid(row=0, column=0, sticky="ew", padx=3)
         ttk.Button(
             buttons,
-            text="Open diagnostics folder",
+            text=self.t("action.open_diagnostics"),
+            style="Neutral.TButton",
             command=self.open_diagnostics_folder,
         ).grid(row=0, column=1, sticky="ew", padx=3)
         ttk.Button(
             buttons,
-            text="Export diagnostics…",
+            text=self.t("action.export_diagnostics"),
+            style="Primary.TButton",
             command=self.export_diagnostics_gui,
         ).grid(row=0, column=2, sticky="ew", padx=3)
         ttk.Button(
             buttons,
-            text="Open release notes",
+            text=self.t("action.open_release_notes"),
+            style="Neutral.TButton",
             command=self.open_release_notes,
         ).grid(row=0, column=3, sticky="ew", padx=3)
-        self.localizer.bind_literal_tree(dialog)
+        dialog.after_idle(lambda: buttons.winfo_children()[0].focus_set())
 
     def open_diagnostics_folder(self) -> None:
         path = self.config_resolution.active_config_dir / "diagnostics"
@@ -2445,6 +2693,7 @@ class A4PumpApp(tk.Tk):
         self.update_run_mode_options()
         self.update_manual_pump_options()
         self.update_dashboard()
+        self.update_primary_arm_label()
         self.set_status(f"OUT pump {'enabled' if enabled else 'disabled'}")
 
     def on_dry_run_changed(self) -> None:
@@ -2457,7 +2706,22 @@ class A4PumpApp(tk.Tk):
                 self.dry_run_var.set(True)
         self._invalidate_shared_plan("LIVE / DRY-RUN mode changed")
         self.update_runtime_controls(self.perfusion_state_var.get())
+        recipe_tab = getattr(self, "recipe_tab", None)
+        if recipe_tab is not None:
+            recipe_tab.update_execution_mode()
+        if hasattr(self, "profile_start_after_write_check"):
+            if self.dry_run_var.get():
+                self.profile_start_after_write_check.configure(state="normal")
+            else:
+                self.profile_start_after_write_var.set(False)
+                self.profile_start_after_write_check.configure(state="disabled")
         self.set_status("LIVE mode enabled" if not self.dry_run_var.get() else "DRY-RUN mode enabled")
+
+    def update_primary_arm_label(self) -> None:
+        button = getattr(self, "experiment_write_button", None)
+        if button is None:
+            return
+        button.configure(text=self.t("action.arm.paired" if self.is_pump_enabled("OUT") else "action.arm.generic"))
 
     def update_out_widgets_state(self) -> None:
         enabled = self.is_pump_enabled("OUT")
@@ -2469,6 +2733,13 @@ class A4PumpApp(tk.Tk):
             widget = getattr(self, widget_name, None)
             if widget is not None:
                 widget.configure(state="readonly" if enabled else "disabled")
+        for widget_name in ["out_syringe_combo", "same_syringe_check", "ratio_lock_check", "out_ratio_entry", "independent_out_flow_entry"]:
+            widget = getattr(self, widget_name, None)
+            if widget is not None:
+                if isinstance(widget, ttk.Combobox):
+                    widget.configure(state="readonly" if enabled else "disabled")
+                else:
+                    widget.configure(state="normal" if enabled else "disabled")
         for widget in getattr(self, "out_detail_widgets", []):
             if enabled:
                 widget.grid()
@@ -2479,6 +2750,7 @@ class A4PumpApp(tk.Tk):
                 self.out_disabled_message.grid_remove()
             else:
                 self.out_disabled_message.grid()
+        self.update_primary_arm_label()
 
     def update_run_mode_options(self) -> None:
         modes = RUN_MODES if self.is_pump_enabled("OUT") else ["IN only"]
@@ -2720,10 +2992,13 @@ class A4PumpApp(tk.Tk):
     def on_close(self) -> None:
         if self._closing:
             return
+        recipe_tab = getattr(self, "recipe_tab", None)
+        if recipe_tab is not None and getattr(recipe_tab, "modified", False):
+            if not recipe_tab.can_discard_recipe():
+                return
         self._closing = True
         self.cancel_hold_auto_stop()
         self.cancel_jog_timer()
-        recipe_tab = getattr(self, "recipe_tab", None)
         if recipe_tab is not None and hasattr(recipe_tab, "cancel_execution"):
             recipe_tab.cancel_execution()
         commissioning_tab = getattr(self, "commissioning_tab", None)
@@ -2823,9 +3098,9 @@ class A4PumpApp(tk.Tk):
         nominal = syringe["nominal_inner_diameter_mm"]
         nominal_ul = ul_per_mm_from_inner_diameter(float(nominal))
         text = (
-            f"calibrated_ul_per_mm: {calibrated if calibrated is not None else 'not set'}\n"
-            f"nominal inner diameter: {nominal} mm\n"
-            f"nominal ul_per_mm: {nominal_ul:.2f}"
+            f"{self.t('calculator.calibrated_conversion')}: {calibrated if calibrated is not None else self.t('status.not_set')} µL/mm\n"
+            f"{self.t('calculator.nominal_diameter')}: {nominal} mm\n"
+            f"{self.t('calculator.nominal_conversion')}: {nominal_ul:.2f} µL/mm"
         )
         self.syringe_info.configure(text=text)
 
@@ -2859,24 +3134,44 @@ class A4PumpApp(tk.Tk):
             profile = self.data["profiles"][key]
             syringe_key = profile["syringe"]
             result = calculate_profile(profile, self.data["syringes"][syringe_key], syringe_key)
-            lines = [
-                f"{profile['display_name']}",
-                f"syringe: {syringe_key}",
-                f"direction: {profile.get('direction', 'forward')}",
-                "",
-                "Manual A4 settings:",
-                f"speed mm/min: {result.speed_mm_min:.3f}" if result.speed_mm_min is not None else "speed mm/min:",
-                f"time sec: {result.duration_s:.1f}" if result.duration_s is not None else "time sec:",
-                f"estimated volume uL: {result.estimated_volume_ul:.1f}"
-                if result.estimated_volume_ul is not None
-                else "estimated volume uL:",
-                f"warning: {result.warning}" if result.warning else "",
-                "",
-                "Use Write settings to A4 to send these values.",
+            direction = str(profile.get("direction", "forward"))
+            commands = []
+            if result.speed_mm_min is not None and result.duration_s is not None:
+                commands = format_settings_commands(result.speed_mm_min, result.duration_s, save=True)
+            rows = [
+                (self.t("label.profile"), str(profile.get("display_name", key))),
+                (self.t("profile.key"), key),
+                (self.t("profile.syringe"), syringe_key),
+                (self.t("profile.direction"), self.localizer.display_value(direction)),
+                (self.t("profile.speed"), f"{result.speed_mm_min:.3f} mm/min" if result.speed_mm_min is not None else "—"),
+                (self.t("profile.duration"), f"{result.duration_s:.1f} s" if result.duration_s is not None else "—"),
+                (self.t("profile.volume"), f"{result.estimated_volume_ul:.1f} µL" if result.estimated_volume_ul is not None else "—"),
+                (self.t("profile.warning"), self.localize_profile_warning(str(result.warning)) if result.warning else self.t("status.none")),
             ]
-            self.profile_result_var.set("\n".join(line for line in lines if line != ""))
+            self.profile_commands_var.set(" ".join(commands) or "—")
+            self.profile_result_var.set("\n".join(f"{label}: {value}" for label, value in rows))
+            self.profile_display_var.set(self._profile_display(key))
         except Exception as exc:
-            self.profile_result_var.set(f"ERROR: {exc}")
+            self.profile_result_var.set(f"{self.t('recipe.error')}: {exc}")
+
+    def localize_profile_warning(self, warning: str) -> str:
+        match = re.fullmatch(
+            r"5 mL syringe recommended fill: prime 1000 uL \+ target (\d+) uL \+ margin 200 uL = about (\d+) uL",
+            warning,
+        )
+        if match:
+            return self.t("profile.fill_recommendation", target=match.group(1), recommended=match.group(2))
+        return warning
+
+    def toggle_profile_commands(self) -> None:
+        self._profile_commands_visible = not self._profile_commands_visible
+        if self._profile_commands_visible:
+            self.profile_commands_label.grid(row=4, column=0, sticky="ew", pady=(4, 0))
+        else:
+            self.profile_commands_label.grid_remove()
+        self.profile_commands_button.configure(
+            text=self.t("profile.hide_commands" if self._profile_commands_visible else "profile.show_commands")
+        )
 
     def write_profile_settings_async(self) -> None:
         try:
@@ -3407,23 +3702,22 @@ class A4PumpApp(tk.Tk):
             raise ValueError(f"value must be between {minimum} and {maximum} ms")
         return duration_ms
 
-    @staticmethod
-    def format_result(result: dict[str, Any]) -> str:
-        lines = []
-        for key in [
-            "required_travel_mm",
-            "speed_mm_min",
-            "duration_s",
-            "estimated_volume_ul",
-            "target_volume_ul",
-            "warning",
-        ]:
-            value = result.get(key)
-            if value not in (None, ""):
-                if isinstance(value, float):
-                    lines.append(f"{key}: {value:.3f}")
-                else:
-                    lines.append(f"{key}: {value}")
+    def format_result(self, result: dict[str, Any]) -> str:
+        fields = (
+            ("required_travel_mm", "calculator.travel", "mm"),
+            ("speed_mm_min", "profile.speed", "mm/min"),
+            ("duration_s", "profile.duration", "s"),
+            ("estimated_volume_ul", "profile.volume", "µL"),
+            ("target_volume_ul", "calculator.target_volume", "µL"),
+            ("warning", "profile.warning", ""),
+        )
+        lines = [self.t("calculator.result")]
+        for field, key, unit in fields:
+            value = result.get(field)
+            if value in (None, ""):
+                continue
+            display = f"{value:.3f}" if isinstance(value, float) else str(value)
+            lines.append(f"{self.t(key)}: {display}{(' ' + unit) if unit else ''}")
         return "\n".join(lines)
 
 

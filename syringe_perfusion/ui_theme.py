@@ -27,6 +27,11 @@ COLORS = {
     "success_soft": "#D1FAE5",
     "warning_soft": "#FEF3C7",
     "selection": "#E8F0FE",
+    "neutral": "#EEF2F7",
+    "neutral_hover": "#E2E8F0",
+    "neutral_pressed": "#D8E0EA",
+    "neutral_border": "#CBD5E1",
+    "focus": "#1D4ED8",
     "sidebar": "#FFFFFF",
 }
 
@@ -94,27 +99,66 @@ def apply_theme(root: tk.Tk | tk.Toplevel) -> ttk.Style:
     style.configure("Value.TLabel", font=FONTS["value"], background=COLORS["card"], foreground=COLORS["text"])
     style.configure("Muted.TLabel", font=FONTS["subtitle"], background=COLORS["background"], foreground=COLORS["muted"])
 
-    _button(style, "TButton", "#FFFFFF", COLORS["text"], COLORS["border_soft"])
-    _button(style, "Secondary.TButton", "#FFFFFF", COLORS["text"], COLORS["border_soft"])
+    _button(style, "TButton", COLORS["neutral"], COLORS["text"], COLORS["neutral_border"], active=COLORS["neutral_hover"])
+    _button(style, "Neutral.TButton", COLORS["neutral"], COLORS["text"], COLORS["neutral_border"], active=COLORS["neutral_hover"])
+    _button(style, "NeutralCompact.TButton", COLORS["neutral"], COLORS["text"], COLORS["neutral_border"], active=COLORS["neutral_hover"], padding=(9, 6))
+    _button(style, "Outline.TButton", "#FFFFFF", COLORS["text"], COLORS["neutral_border"], active=COLORS["neutral"])
+    # Compatibility names now use the visible neutral treatment.
+    _button(style, "Secondary.TButton", COLORS["neutral"], COLORS["text"], COLORS["neutral_border"], active=COLORS["neutral_hover"])
     _button(style, "Ghost.TButton", COLORS["surface"], COLORS["text"], COLORS["surface"])
     _button(style, "Nav.TButton", COLORS["sidebar"], COLORS["text"], COLORS["sidebar"])
     _button(style, "NavSelected.TButton", COLORS["selection"], COLORS["primary"], COLORS["selection"])
     _button(style, "Sidebar.TButton", COLORS["sidebar"], COLORS["text"], COLORS["sidebar"])
     _button(style, "SidebarSelected.TButton", COLORS["selection"], COLORS["primary"], COLORS["selection"])
     _button(style, "Primary.TButton", COLORS["primary"], "#FFFFFF", COLORS["primary"], active=COLORS["primary_hover"])
+    _button(style, "PrimaryCompact.TButton", COLORS["primary"], "#FFFFFF", COLORS["primary"], active=COLORS["primary_hover"], padding=(9, 3))
     _button(style, "Accent.TButton", COLORS["primary"], "#FFFFFF", COLORS["primary"], active=COLORS["primary_hover"])
-    _button(style, "Success.TButton", COLORS["success"], "#FFFFFF", COLORS["success"])
-    _button(style, "Danger.TButton", COLORS["danger"], "#FFFFFF", COLORS["danger"])
-    _button(style, "DangerSecondary.TButton", COLORS["danger_soft"], COLORS["danger"], COLORS["danger_soft"])
-    _button(style, "Compact.TButton", "#FFFFFF", COLORS["text"], COLORS["border_soft"], padding=(8, 5))
+    _button(style, "Success.TButton", COLORS["success"], "#FFFFFF", COLORS["success"], active="#047857")
+    _button(style, "SuccessCompact.TButton", COLORS["success"], "#FFFFFF", COLORS["success"], active="#047857", padding=(9, 3))
+    _button(style, "Warning.TButton", COLORS["warning"], "#FFFFFF", COLORS["warning"], active="#B45309")
+    _button(style, "WarningCompact.TButton", COLORS["warning"], "#FFFFFF", COLORS["warning"], active="#B45309", padding=(9, 3))
+    _button(style, "Danger.TButton", COLORS["danger"], "#FFFFFF", COLORS["danger"], active="#B91C1C")
+    _button(style, "DangerCompact.TButton", COLORS["danger"], "#FFFFFF", COLORS["danger"], active="#B91C1C", padding=(9, 3))
+    _button(style, "DangerSecondary.TButton", COLORS["danger_soft"], COLORS["danger"], "#FCA5A5", active="#FECACA")
+    _button(style, "Compact.TButton", COLORS["neutral"], COLORS["text"], COLORS["neutral_border"], active=COLORS["neutral_hover"], padding=(9, 6))
 
     style.configure("TCheckbutton", background=COLORS["background"], foreground=COLORS["text"])
     style.configure("Card.TCheckbutton", background=COLORS["card"], foreground=COLORS["text"])
     style.configure("TEntry", fieldbackground="#FFFFFF", bordercolor=COLORS["border"], lightcolor=COLORS["border"])
     style.configure("TCombobox", fieldbackground="#FFFFFF", bordercolor=COLORS["border"], lightcolor=COLORS["border"])
-    style.configure("TNotebook", background=COLORS["background"], borderwidth=0)
+    style.configure("TNotebook", background=COLORS["background"], borderwidth=0, tabmargins=(0, 0, 0, 6))
+    style.configure("TNotebook.Tab", background=COLORS["neutral"], foreground=COLORS["muted"], padding=(16, 9), borderwidth=0)
+    style.map(
+        "TNotebook.Tab",
+        background=[("selected", COLORS["selection"]), ("active", COLORS["neutral_hover"])],
+        foreground=[("selected", COLORS["primary"]), ("active", COLORS["text"])],
+        expand=[("selected", (0, 0, 0, 2))],
+    )
     style.configure("Hidden.TNotebook", background=COLORS["background"], borderwidth=0)
     style.layout("Hidden.TNotebook.Tab", [])
+
+    style.configure(
+        "Treeview",
+        background="#FFFFFF",
+        fieldbackground="#FFFFFF",
+        foreground=COLORS["text"],
+        rowheight=30,
+        bordercolor=COLORS["border"],
+        lightcolor=COLORS["border"],
+        darkcolor=COLORS["border"],
+    )
+    style.map("Treeview", background=[("selected", COLORS["primary"])], foreground=[("selected", "#FFFFFF")])
+    style.configure(
+        "Treeview.Heading",
+        background=COLORS["neutral"],
+        foreground=COLORS["text"],
+        font=FONTS["body_bold"],
+        padding=(8, 7),
+        relief="flat",
+    )
+    style.map("Treeview.Heading", background=[("active", COLORS["neutral_hover"])])
+    style.configure("Vertical.TScrollbar", width=16, arrowsize=14)
+    style.configure("Horizontal.TScrollbar", arrowsize=14)
 
     style.configure("BadgeEnabled.TLabel", font=FONTS["badge"], background=COLORS["success_soft"], foreground=COLORS["success"], padding=(8, 3))
     style.configure("BadgeDisabled.TLabel", font=FONTS["badge"], background=COLORS["surface_muted"], foreground=COLORS["muted"], padding=(8, 3))
@@ -141,12 +185,21 @@ def _button(
         lightcolor=border,
         darkcolor=border,
         padding=padding,
-        relief="flat",
+        relief="solid",
+        borderwidth=1,
+        focusthickness=2,
+        focuscolor=COLORS["focus"],
     )
     style.map(
         name,
-        background=[("disabled", "#F3F4F6"), ("active", active or background)],
+        background=[
+            ("disabled", "#F3F4F6"),
+            ("pressed", COLORS["neutral_pressed"] if background == COLORS.get("neutral") else active or background),
+            ("active", active or background),
+        ],
         foreground=[("disabled", "#9CA3AF"), ("active", foreground)],
+        bordercolor=[("disabled", "#E5E7EB"), ("focus", COLORS["focus"]), ("active", border)],
+        relief=[("pressed", "sunken"), ("!pressed", "solid")],
     )
 
 

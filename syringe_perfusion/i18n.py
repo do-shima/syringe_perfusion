@@ -54,6 +54,29 @@ DISPLAY_VALUE_KEYS = {
     "COMMISSIONING CURRENT": "value.commissioning_current",
     "COMMISSIONING FAILED": "value.commissioning_failed",
     "COMMISSIONING STALE": "value.commissioning_stale",
+    "pump_start": "value.pump_start",
+    "pump_stop": "value.pump_stop",
+    "manual_jog": "value.manual_jog",
+    "wait": "value.wait",
+    "stop_all": "value.stop_all",
+    "log_marker": "value.log_marker",
+    "prompt_check": "value.prompt_check",
+    "start_forward": "value.start_forward",
+    "start_reverse": "value.start_reverse",
+    "stop": "value.stop",
+    "volume_duration": "value.volume_duration",
+    "volume_flow": "value.volume_flow",
+    "flow_duration": "value.flow_duration",
+    "speed_duration": "value.speed_duration",
+    "exe_adjacent": "value.exe_adjacent",
+    "same_directory": "value.same_directory",
+    "writable": "value.writable",
+    "read_only": "value.read_only",
+}
+
+KNOWN_FAULT_KEYS = {
+    "one or more STOP commands failed": "fault.stop_commands_failed",
+    "one or more pump STOP attempts failed": "fault.stop_attempts_failed",
 }
 
 
@@ -264,6 +287,12 @@ class Localizer:
         if self.language == "ja" and include_code and translated != canonical:
             return f"{translated}（{canonical}）"
         return translated
+
+    def fault_summary(self, message: str) -> str:
+        """Localize known fault text while preserving the stored raw message."""
+        normalized = str(message).strip()
+        key = KNOWN_FAULT_KEYS.get(normalized)
+        return self.t(key) if key else normalized
 
     def language_choice(self, preference: str) -> str:
         return self.t(f"language.{preference}")

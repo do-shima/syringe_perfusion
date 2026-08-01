@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.2.0-beta.3] - 2026-08-01
+
+Superseding hardware-validation release candidate. Beta.2 remains historical but is superseded for HIL use because the Recipe editor and secondary workspaces were not sufficiently usable at normal and high-DPI window sizes.
+
+### Fixed
+
+- Replaced the vertically expensive Recipe step cards with a compact, scrollable Treeview and one shared movement toolbar.
+- Added responsive wide three-pane and narrow stacked Recipe layouts plus an independently scrollable Inspector.
+- Replaced white-on-white secondary buttons with visible neutral, outline, focus, pressed, disabled, success, warning, and danger treatments.
+- Localized structured Profile and Calculator results, Setup source values, History states, and About / Diagnostics fields.
+- Distinguished active faults from historical faults and added non-destructive acknowledgement of resolved historical warnings.
+- Suppressed executable OUT values and changed PROGRAM / ARM wording when OUT is disabled.
+
+### Added
+
+- Unsaved Recipe tracking and protected New, Open, and close flows.
+- Recipe keyboard shortcuts, compact/collapsible technical logs, responsive History scrollbars, and structured copyable build paths.
+- Deterministic geometry, localization, visual-style, focus, fault, and OUT-disabled presentation tests.
+
+### Compatibility
+
+- Control compatibility remains `1`; UART, flow, quantization, timing, START/STOP, cancellation, snapshots, preflight, commissioning, calibration, CLI, and NIS behavior are unchanged.
+
 ## [0.2.0-beta.2] - 2026-07-30
 
 Superseding hardware-validation release candidate. Beta.1 is retained as historical evidence but is superseded for HIL use because lower Experiment controls were inaccessible in the initial viewport.
