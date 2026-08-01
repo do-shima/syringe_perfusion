@@ -1,0 +1,4 @@
+interface:
+  display_name: "Syringe Perfusion Hardware Safety"
+  short_description: "Protect pump control and STOP safety invariants"
+  default_prompt: "Use $syringe-perfusion-hardware-safety to review a pump-control change against the hardware safety contract."

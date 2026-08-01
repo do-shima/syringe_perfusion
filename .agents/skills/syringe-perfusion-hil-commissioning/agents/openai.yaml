@@ -1,0 +1,4 @@
+interface:
+  display_name: "Syringe Perfusion HIL Commissioning"
+  short_description: "Run traceable bounded hardware commissioning"
+  default_prompt: "Use $syringe-perfusion-hil-commissioning to conduct a bounded fixed-build hardware validation session."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Syringe Perfusion Review Closeout"
+  short_description: "Audit milestones and close out evidence accurately"
+  default_prompt: "Use $syringe-perfusion-review-closeout to audit a milestone and classify its completion evidence."

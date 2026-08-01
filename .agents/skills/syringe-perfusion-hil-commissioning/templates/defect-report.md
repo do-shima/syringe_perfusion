@@ -1,0 +1,21 @@
+# HIL defect report
+
+- Defect ID:
+- Date/time/operator:
+- Artifact version/commit/SHA-256:
+- Active Config and target identity:
+- Validation stage:
+- Evidence level:
+- Expected behavior:
+- Observed behavior:
+- Exact software state/run ID:
+- UART completion evidence, if any:
+- Manual physical observation:
+- Measurements:
+- STOP/power-isolation response:
+- Logs/diagnostics/report references:
+- Reproduction steps using bounded operation:
+- Safety severity:
+- Session disposition:
+- Source modification required: yes/no/unknown
+- New build/session required:

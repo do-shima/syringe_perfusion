@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tkinter Laboratory UI UX"
+  short_description: "Design safe responsive scientific Tkinter interfaces"
+  default_prompt: "Use $tkinter-laboratory-ui-ux to improve and verify a laboratory Tkinter workflow."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Syringe Perfusion Project Workflow"
+  short_description: "Safe repository workflow and scoped delivery"
+  default_prompt: "Use $syringe-perfusion-project-workflow to complete a scoped repository task and report verified results."

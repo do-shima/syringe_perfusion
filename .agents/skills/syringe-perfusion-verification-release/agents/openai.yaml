@@ -1,0 +1,4 @@
+interface:
+  display_name: "Syringe Perfusion Verification Release"
+  short_description: "Verify tests builds and release artifacts safely"
+  default_prompt: "Use $syringe-perfusion-verification-release to verify and package a release candidate safely."
