@@ -1,6 +1,6 @@
 # A4 Syringe Pump Control
 
-Release candidate: 0.2.0-beta.3 (`0.2.0b3` package metadata)
+Release candidate: 0.2.0-beta.4 (`0.2.0b4` package metadata)
 GUI: Tkinter/ttk + clam theme + custom Style  
 Control: USB-TTL UART  
 Distribution: PyInstaller one-folder  
@@ -16,7 +16,7 @@ Setup内の **Commissioning** workspaceは、port identity、物理方向、Emer
 
 GUIは日本語と英語に対応します。表示言語は左サイドバーまたはSetupから `自動 / Auto`、`日本語`、`English` を選択でき、`%LOCALAPPDATA%\A4PumpControl\settings.json` のUI設定だけに保存されます。Autoは日本語Windowsで日本語、それ以外で英語を選びます。切り替えは実行状態、Active Config、設定fingerprint、ARMED、実機検証結果に影響しません。
 
-Experimentは、固定ヘッダー、常時表示の主要操作、縦スクロール可能なダッシュボード本文、固定の全停止フッターで構成します。狭い画面や高DPIでは灌流条件とIN / OUT計算を縦に並べ、長い安全情報とパスを折り返します。900×600でもマウスホイール、Page Up / Page Down、Home / Endで最下部まで到達できます。
+Experimentは、実際の作業順に沿った4段階のガイド（実験条件、機器設定、顕微鏡・NIS準備、実行）を既定画面にします。進行状況、実験サマリー、現在の主要操作、全停止を固定表示し、詳細内容だけをスクロールします。条件やポートを変更すると後続手順を無効化し、再設定が必要な理由を表示します。履歴は独立した画面、低頻度の機器設定・実機検証・Profile・Calculator・Recipe・診断は「管理・詳細設定」にまとめています。
 
 AdvancedのRecipe workspaceは、広い画面ではBlock Library／Recipe Steps／Inspectorの3ペイン、狭い画面ではInspectorを下段に配置します。Recipe Stepsはコンパクトな表、Inspectorは独立スクロールです。通常操作ボタンは灰色塗り、検証とDRY-RUNは青、保存とPROGRAM / ARMは緑、LIVEはアンバー、全停止は赤で表示します。Profile、Calculator、History、About / Diagnosticsも日本語・英語の構造化表示とレスポンシブ配置を使用します。
 
@@ -585,9 +585,9 @@ Main entry points:
 
 ## Development Status
 
-- Release candidate: 0.2.0-beta.3
-- Canonical package version: `pyproject.toml` value `0.2.0b3`
-- Future tag name: `v0.2.0-beta.3` (not created by build scripts)
+- Release candidate: 0.2.0-beta.4
+- Canonical package version: `pyproject.toml` value `0.2.0b4`
+- Future tag name: `v0.2.0-beta.4` (not created by build scripts)
 - Tests: run `python -m pytest -q` to verify the current checkout
 - GUI/CLI one-folder build and NIS wrapper DRY-RUN confirmed
 - Live pump control and actual NIS `Int_ExecProgram` behavior require hardware validation
@@ -599,7 +599,7 @@ Main entry points:
 
 ## Build identity and diagnostics
 
-`pyproject.toml` is the single package-version source. GUI, CLI, commissioning records, reports, build metadata, and artifacts derive the human form `0.2.0-beta.3` from PEP 440 `0.2.0b3`. Frozen builds read `_internal\build_info.json` and never invoke Git at startup. Build metadata is informational and never bypasses preflight or safety checks.
+`pyproject.toml` is the single package-version source. GUI, CLI, commissioning records, reports, build metadata, and artifacts derive the human form `0.2.0-beta.4` from PEP 440 `0.2.0b4`. Frozen builds read `_internal\build_info.json` and never invoke Git at startup. Build metadata is informational and never bypasses preflight or safety checks.
 
 Read-only diagnostics:
 
@@ -613,6 +613,7 @@ The diagnostic ZIP includes sanitized build/config/preflight/runtime/validation 
 
 ## Version History
 
+- 0.2.0-beta.4: guided four-step experiment workflow, simplified top-level navigation, persistent progress and experiment summary, and explicit NIS preparation. Control compatibility remains 1. Beta.3 is superseded for routine HIL operation because the primary screen exposed too many independent settings at once.
 - 0.2.0-beta.3: responsive Recipe workspace, visible button hierarchy, localized Profile/Calculator/History/About displays, and clearer fault/OUT-disabled presentation. Control compatibility remains 1. Beta.2 is superseded for HIL use because Recipe and secondary-screen usability remained incomplete.
 - 0.2.0-beta.2: Experiment viewport accessibility and complete Japanese/English GUI localization. Control compatibility remains 1.
 - 0.2.0-beta.1: traceable hardware-validation release candidate; commissioning, preflight, dashboard, diagnostics, and reproducible Windows packaging.

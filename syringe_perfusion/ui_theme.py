@@ -339,7 +339,12 @@ class ScrollableFrame(ttk.Frame):
                 return ""
             magnitude = max(1, abs(delta) // 120)
             units = -magnitude if delta > 0 else magnitude
-        self.canvas.yview_scroll(units, "units")
+        # Tk's default unit size can round to zero when a fixed header leaves a
+        # very short viewport.  Move by a bounded fraction so every wheel notch
+        # remains effective while still respecting the delta magnitude.
+        first, last = self.canvas.yview()
+        step = max(0.02, (last - first) / 8.0)
+        self.canvas.yview_moveto(max(0.0, min(1.0, first + units * step)))
         return "break"
 
     def scroll_page(self, direction: int) -> str:

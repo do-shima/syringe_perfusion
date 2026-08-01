@@ -157,6 +157,11 @@ def test_gui_requested_delay_uses_shared_scheduler(tmp_path: Path, monkeypatch) 
         app.config_resolution = validate_config_directory(active)
         app.dry_run_var.set(False)
         app.requested_start_delay_var.set("12.5")
+        # The guided workflow treats start timing as a Step 1 condition, so a
+        # previously armed plan is intentionally invalidated.  Re-arm the
+        # fixture after applying the requested delay to isolate scheduler use.
+        app.update_idletasks()
+        write_state(active, {"state": "ARMED", "plan_id": "PLAN", "plan": {"plan_id": "PLAN"}})
         app.start_armed_gui()
         settle(app, lambda: captured.get("delay_s") == 12.5)
         settle(app, lambda: app._active_operation is None)

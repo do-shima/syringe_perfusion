@@ -53,6 +53,7 @@ from .diagnostics import export_diagnostics
 from .gui_commissioning import CommissioningFrame
 from .gui_history import RunHistoryFrame
 from .gui_recipe import RecipeBuilderFrame
+from .gui_workflow import GuidedExperimentFrame
 from .i18n import LANGUAGE_PREFERENCES, Localizer
 from .preflight import assess_preflight
 from .profiles import calculate, calculate_profile, result_to_dict, ul_per_mm_from_inner_diameter
@@ -180,6 +181,14 @@ class A4PumpApp(tk.Tk):
         self._operational_state = "DIRTY"
         self.programmed_message_var = tk.StringVar(value="")
         self.runtime_detail_var = tk.StringVar(value="")
+        self.experiment_config_var = tk.StringVar(value="")
+        self.experiment_pumps_var = tk.StringVar(value="")
+        self.dashboard_identity_var = tk.StringVar(value="")
+        self.dashboard_plan_var = tk.StringVar(value="")
+        self.dashboard_safety_var = tk.StringVar(value="")
+        self.dashboard_timing_var = tk.StringVar(value="")
+        self.dashboard_fault_raw_var = tk.StringVar(value="")
+        self._fault_details_visible = False
         self.port_scan_status_var = tk.StringVar(value=self.t("status.ports_not_scanned"))
         self.in_port_metadata_var = tk.StringVar(value="")
         self.out_port_metadata_var = tk.StringVar(value="")
@@ -218,6 +227,8 @@ class A4PumpApp(tk.Tk):
             self.requested_start_delay_var,
         ):
             variable.trace_add("write", self._on_perfusion_input_changed)
+        for variable in (self.condition_var, self.dish_id_var, self.trigger_var):
+            variable.trace_add("write", self._on_workflow_metadata_changed)
         self._loading_settings = False
         self.bind_all("<Escape>", self.on_escape_stop)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -336,26 +347,42 @@ class A4PumpApp(tk.Tk):
         self.notebook.grid(row=1, column=0, sticky="nsew")
 
         experiment_tab = ttk.Frame(self.notebook, style="Page.TFrame", padding=0)
-        setup_tab = ttk.Frame(self.notebook, style="Page.TFrame", padding=0)
-        advanced_tab = ttk.Frame(self.notebook, style="Page.TFrame", padding=0)
+        history_page = ttk.Frame(self.notebook, style="Page.TFrame", padding=0)
+        management_page = ttk.Frame(self.notebook, style="Page.TFrame", padding=0)
         for key, page in (
             ("experiment", experiment_tab),
-            ("setup", setup_tab),
-            ("advanced", advanced_tab),
+            ("history", history_page),
+            ("management", management_page),
         ):
             self.notebook.add(page, text=key)
+
+        history_page.columnconfigure(0, weight=1)
+        history_page.rowconfigure(0, weight=1)
+        self.history_tab = RunHistoryFrame(history_page, self)
+        self.history_tab.grid(row=0, column=0, sticky="nsew")
+
+        management_page.columnconfigure(0, weight=1)
+        management_page.rowconfigure(0, weight=1)
+        self.management_notebook = ttk.Notebook(management_page)
+        self.management_notebook.grid(row=0, column=0, sticky="nsew")
+        setup_tab = ttk.Frame(self.management_notebook, style="Page.TFrame", padding=0)
+        advanced_tab = ttk.Frame(self.management_notebook, style="Page.TFrame", padding=0)
+        self.management_notebook.add(setup_tab, text="setup")
+        self.management_notebook.add(advanced_tab, text="advanced")
 
         # Legacy aliases keep API/tests stable without creating legacy navigation.
         self.pages = {
             "experiment": experiment_tab,
-            "setup": setup_tab,
-            "advanced": advanced_tab,
+            "history": history_page,
+            "management": management_page,
+            "setup": management_page,
+            "advanced": management_page,
             "dashboard": experiment_tab,
             "run": experiment_tab,
-            "pumps": setup_tab,
-            "profiles": advanced_tab,
-            "calculator": advanced_tab,
-            "recipes": advanced_tab,
+            "pumps": management_page,
+            "profiles": management_page,
+            "calculator": management_page,
+            "recipes": management_page,
         }
 
         self._build_experiment_tab(experiment_tab)
@@ -383,8 +410,8 @@ class A4PumpApp(tk.Tk):
         self.sidebar_version_label.grid(row=1, column=0, sticky="w", pady=(0, 16))
         items = [
             ("experiment", "nav.experiment"),
-            ("setup", "nav.setup"),
-            ("advanced", "nav.advanced"),
+            ("history", "nav.history"),
+            ("management", "nav.management"),
         ]
         for row, (key, text_key) in enumerate(items, start=2):
             button = ttk.Button(
@@ -400,10 +427,12 @@ class A4PumpApp(tk.Tk):
             {
                 "dashboard": self.nav_buttons["experiment"],
                 "run": self.nav_buttons["experiment"],
-                "pumps": self.nav_buttons["setup"],
-                "profiles": self.nav_buttons["advanced"],
-                "calculator": self.nav_buttons["advanced"],
-                "recipes": self.nav_buttons["advanced"],
+                "setup": self.nav_buttons["management"],
+                "advanced": self.nav_buttons["management"],
+                "pumps": self.nav_buttons["management"],
+                "profiles": self.nav_buttons["management"],
+                "calculator": self.nav_buttons["management"],
+                "recipes": self.nav_buttons["management"],
             }
         )
         ttk.Separator(parent, orient="horizontal").grid(row=20, column=0, sticky="ew", pady=16)
@@ -434,6 +463,8 @@ class A4PumpApp(tk.Tk):
         self.notebook.select(self.pages[page])
         titles = {
             "experiment": ("page.experiment.title", "page.experiment.subtitle"),
+            "history": ("nav.history", "page.history.subtitle"),
+            "management": ("nav.management", "page.management.subtitle"),
             "setup": ("page.setup.title", "page.setup.subtitle"),
             "advanced": ("page.advanced.title", "page.advanced.subtitle"),
             "dashboard": ("page.experiment.title", "page.experiment.subtitle"),
@@ -450,14 +481,20 @@ class A4PumpApp(tk.Tk):
         selected_main = {
             "dashboard": "experiment",
             "run": "experiment",
-            "pumps": "setup",
-            "profiles": "advanced",
-            "calculator": "advanced",
-            "recipes": "advanced",
+            "setup": "management",
+            "advanced": "management",
+            "pumps": "management",
+            "profiles": "management",
+            "calculator": "management",
+            "recipes": "management",
         }.get(page, page)
-        for key in ("experiment", "setup", "advanced"):
+        for key in ("experiment", "history", "management"):
             button = self.nav_buttons[key]
             button.configure(style="NavSelected.TButton" if key == selected_main else "Nav.TButton")
+        if page in {"setup", "pumps"}:
+            self.management_notebook.select(0)
+        elif page in {"advanced", "profiles", "calculator", "recipes"}:
+            self.management_notebook.select(1)
         if page in {"profiles", "calculator", "recipes"} and hasattr(self, "advanced_notebook"):
             self.advanced_notebook.select({"profiles": 0, "calculator": 1, "recipes": 2}[page])
         self.set_status(f"{self.t('status.ready')} - {title}")
@@ -574,6 +611,12 @@ class A4PumpApp(tk.Tk):
         super().destroy()
 
     def _build_experiment_tab(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+        self.guided_workflow = GuidedExperimentFrame(parent, self)
+        self.guided_workflow.grid(row=0, column=0, sticky="nsew")
+
+    def _build_legacy_experiment_tab(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(1, weight=1)
         self._experiment_layout_job: str | None = None
@@ -821,6 +864,10 @@ class A4PumpApp(tk.Tk):
         self.update_ratio_widgets()
 
     def _schedule_experiment_layout(self, _event: tk.Event[Any] | None = None) -> None:
+        workflow = getattr(self, "guided_workflow", None)
+        if workflow is not None:
+            workflow._schedule_layout(_event)
+            return
         if self._experiment_layout_job is not None:
             try:
                 self.after_cancel(self._experiment_layout_job)
@@ -829,6 +876,11 @@ class A4PumpApp(tk.Tk):
         self._experiment_layout_job = self.after(70, self._apply_experiment_layout)
 
     def _apply_experiment_layout(self) -> None:
+        workflow = getattr(self, "guided_workflow", None)
+        if workflow is not None:
+            workflow._apply_layout()
+            self.experiment_layout_mode = workflow.layout_mode
+            return
         self._experiment_layout_job = None
         width = max(1, self.experiment_scroll.canvas.winfo_width())
         wide = width >= 760
@@ -953,8 +1005,8 @@ class A4PumpApp(tk.Tk):
             self.global_stop_button.configure(text=self.t("action.stop_all_esc"))
         for key, label_key in (
             ("experiment", "nav.experiment"),
-            ("setup", "nav.setup"),
-            ("advanced", "nav.advanced"),
+            ("history", "nav.history"),
+            ("management", "nav.management"),
         ):
             button = self.nav_buttons.get(key)
             if button is not None:
@@ -962,13 +1014,17 @@ class A4PumpApp(tk.Tk):
         if hasattr(self, "setup_notebook"):
             self.setup_notebook.tab(0, text=self.t("nav.hardware"))
             self.setup_notebook.tab(1, text=self.t("nav.commissioning"))
+        if hasattr(self, "management_notebook"):
+            self.management_notebook.tab(0, text=self.t("nav.hardware"))
+            self.management_notebook.tab(1, text=self.t("nav.advanced"))
         if hasattr(self, "advanced_notebook"):
-            for index, key in enumerate(("nav.profiles", "nav.calculator", "nav.recipes", "nav.history")):
+            for index, key in enumerate(("nav.profiles", "nav.calculator", "nav.recipes")):
                 self.advanced_notebook.tab(index, text=self.t(key))
         for child in (
             getattr(self, "recipe_tab", None),
             getattr(self, "history_tab", None),
             getattr(self, "commissioning_tab", None),
+            getattr(self, "guided_workflow", None),
         ):
             refresh_language = getattr(child, "refresh_language", None)
             if callable(refresh_language):
@@ -1065,11 +1121,9 @@ class A4PumpApp(tk.Tk):
         self.profile_scroll = profile_scroll
         self.calculator_scroll = calc_scroll
         self.recipe_tab = RecipeBuilderFrame(self.advanced_notebook, self)
-        self.history_tab = RunHistoryFrame(self.advanced_notebook, self)
         self.advanced_notebook.add(profile_scroll, text="Profiles")
         self.advanced_notebook.add(calc_scroll, text="Calculator")
         self.advanced_notebook.add(self.recipe_tab, text="Recipes")
-        self.advanced_notebook.add(self.history_tab, text="Run history")
         self._build_profile_tab(profile_scroll.inner)
         self._build_calc_tab(calc_scroll.inner)
 
@@ -1251,7 +1305,63 @@ class A4PumpApp(tk.Tk):
         ttk.Button(safety, text="STOP ALL", style="Danger.TButton", command=self.gui_stop_all_now).grid(
             row=2, column=2, sticky="ew", pady=(8, 0)
         )
-        self.pump_log = self._make_log_box(parent, row=3, columnspan=2)
+
+        legacy = create_card(
+            parent,
+            self.t("management.legacy.title"),
+            self.t("management.legacy.description"),
+        )
+        legacy.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        for column in range(4):
+            legacy.columnconfigure(column, weight=1)
+        ttk.Label(legacy, text=self.t("management.legacy.mode"), style="Card.TLabel").grid(
+            row=2, column=0, sticky="w", padx=4, pady=4
+        )
+        self.run_mode_combo = ttk.Combobox(
+            legacy,
+            textvariable=self.run_mode_var,
+            values=RUN_MODES,
+            state="readonly",
+        )
+        self.run_mode_combo.grid(row=2, column=1, sticky="ew", padx=4, pady=4)
+        ttk.Label(legacy, text=self.t("management.legacy.out_delay"), style="Card.TLabel").grid(
+            row=2, column=2, sticky="w", padx=4, pady=4
+        )
+        self.out_delay_entry = ttk.Entry(legacy, textvariable=self.out_delay_var)
+        self.out_delay_entry.grid(row=2, column=3, sticky="ew", padx=4, pady=4)
+        ttk.Label(legacy, text=self.t("management.legacy.profile_in"), style="Card.TLabel").grid(
+            row=3, column=0, sticky="w", padx=4, pady=4
+        )
+        ttk.Combobox(
+            legacy,
+            textvariable=self.profile_in_var,
+            values=list(self.data["profiles"]),
+            state="readonly",
+        ).grid(row=3, column=1, sticky="ew", padx=4, pady=4)
+        ttk.Label(legacy, text=self.t("management.legacy.profile_out"), style="Card.TLabel").grid(
+            row=3, column=2, sticky="w", padx=4, pady=4
+        )
+        self.profile_out_combo = ttk.Combobox(
+            legacy,
+            textvariable=self.profile_out_var,
+            values=list(self.data["profiles"]),
+            state="readonly",
+        )
+        self.profile_out_combo.grid(row=3, column=3, sticky="ew", padx=4, pady=4)
+        ttk.Button(
+            legacy,
+            text=self.t("management.legacy.run"),
+            style="Warning.TButton",
+            command=self.start_run_mode_async,
+        ).grid(row=4, column=0, columnspan=3, sticky="ew", padx=4, pady=(8, 4))
+        ttk.Button(
+            legacy,
+            text=self.t("action.stop_all"),
+            style="Danger.TButton",
+            command=self.gui_stop_all_now,
+        ).grid(row=4, column=3, sticky="ew", padx=4, pady=(8, 4))
+
+        self.pump_log = self._make_log_box(parent, row=4, columnspan=2)
 
     def _build_pump_card(self, parent: ttk.Frame, pump_key: str, title: str, ports: list[str]) -> ttk.Frame:
         enabled = self.is_pump_enabled(pump_key)
@@ -1661,9 +1771,15 @@ class A4PumpApp(tk.Tk):
         values = merge_port_devices(ports, saved, entered)
         self.in_port_combo.configure(values=values)
         self.out_port_combo.configure(values=values)
+        workflow = getattr(self, "guided_workflow", None)
+        if workflow is not None:
+            workflow.workflow_in_port_combo.configure(values=values)
+            workflow.workflow_out_port_combo.configure(values=values)
         timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
         self.port_scan_status_var.set(self.t("status.last_scan", timestamp=timestamp, count=len(ports)))
         self.update_selected_port_metadata()
+        if workflow is not None:
+            workflow.refresh()
         if hasattr(self, "pump_log"):
             self.append_log(self.pump_log, f"Ports: {', '.join(values) or '(none)'}")
 
@@ -1698,11 +1814,24 @@ class A4PumpApp(tk.Tk):
             self.out_syringe_var.set(self.in_syringe_var.get())
             self._loading_settings = False
         self.schedule_perfusion_preview()
+        workflow = getattr(self, "guided_workflow", None)
+        if workflow is not None:
+            workflow.invalidate_after_conditions()
         self.after_idle(self._invalidate_shared_plan, "perfusion setpoint changed")
+
+    def _on_workflow_metadata_changed(self, *_args: Any) -> None:
+        if self._loading_settings:
+            return
+        workflow = getattr(self, "guided_workflow", None)
+        if workflow is not None:
+            workflow.invalidate_after_conditions()
+        self.after_idle(self._invalidate_shared_plan, "experiment workflow metadata changed")
 
     def _invalidate_shared_plan(self, reason: str) -> None:
         try:
             invalidate_armed(self.config_resolution.active_config_dir, reason)
+            if self._operational_state not in {"STARTING", "STARTED", "RUNNING", "STOPPING"}:
+                self.set_operational_state("DIRTY")
         except Exception as exc:
             self.set_status(f"Could not invalidate armed plan: {exc}")
 
@@ -1787,6 +1916,9 @@ class A4PumpApp(tk.Tk):
             self.current_perfusion_setpoint = None
             self.perfusion_preview_var.set(self.t("preview.invalid", error=exc))
         self.update_runtime_controls(self._operational_state)
+        workflow = getattr(self, "guided_workflow", None)
+        if workflow is not None:
+            workflow.refresh()
 
     def on_flow_slider(self, value: str) -> None:
         # Slider is preview-only. It only updates the authoritative numeric entry.
@@ -1825,7 +1957,12 @@ class A4PumpApp(tk.Tk):
             self.set_status(f"Another operation is running: {self._active_operation}")
             return
         try:
-            self.apply_gui_pump_settings()
+            loading_before_program = self._loading_settings
+            self._loading_settings = True
+            try:
+                self.apply_gui_pump_settings()
+            finally:
+                self._loading_settings = loading_before_program
             if not self.out_enabled_var.get():
                 raise ValueError("OUT must be enabled to arm paired perfusion")
             path = save_pump_settings(
@@ -1946,6 +2083,12 @@ class A4PumpApp(tk.Tk):
         self.set_operational_state(name)
         self.append_log(self.run_log, json.dumps({"state": name, "plan_id": state.get("plan_id"), "run_id": state.get("run_id")}, ensure_ascii=False))
         self.set_status(str(state.get("message") or f"Perfusion state: {name}"))
+        workflow = getattr(self, "guided_workflow", None)
+        if workflow is not None:
+            if name == "ARMED":
+                workflow.on_programming_succeeded()
+            else:
+                workflow.refresh()
 
     def _operation_failed(self, title: str, message: str) -> None:
         self._active_operation = None
@@ -2093,6 +2236,9 @@ class A4PumpApp(tk.Tk):
             f"{self.t('label.stop_status')}: "
             f"{self.localizer.state_label('STOPPING' if self._stop_in_flight else status.get('state', 'IDLE'))}"
         )
+        workflow = getattr(self, "guided_workflow", None)
+        if workflow is not None:
+            workflow.refresh()
 
     def acknowledge_historical_fault(self) -> None:
         status = getattr(self, "_dashboard_status_snapshot", {})
@@ -2104,6 +2250,15 @@ class A4PumpApp(tk.Tk):
 
     def toggle_fault_details(self) -> None:
         self._fault_details_visible = not self._fault_details_visible
+        workflow = getattr(self, "guided_workflow", None)
+        if workflow is not None:
+            if self._fault_details_visible and self.dashboard_fault_raw_var.get():
+                if not workflow.technical_details_visible:
+                    workflow.toggle_technical_details()
+                self.fault_raw_label.grid(row=7, column=0, sticky="ew", pady=(3, 0))
+            else:
+                self.fault_raw_label.grid_remove()
+            return
         if self._fault_details_visible and self.dashboard_fault_raw_var.get():
             row = 11 if getattr(self, "experiment_layout_mode", "wide") == "wide" else 12
             self.fault_raw_label.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(3, 0))
@@ -2191,6 +2346,9 @@ class A4PumpApp(tk.Tk):
         else:
             self.programmed_message_var.set("")
         self.update_runtime_controls(state)
+        workflow = getattr(self, "guided_workflow", None)
+        if workflow is not None:
+            workflow.refresh()
 
     def update_runtime_controls(self, state: str) -> None:
         locked = (
@@ -2225,6 +2383,9 @@ class A4PumpApp(tk.Tk):
         if not self._loading_settings:
             self._pump_settings_dirty = True
             self.update_selected_port_metadata()
+            workflow = getattr(self, "guided_workflow", None)
+            if workflow is not None:
+                workflow.invalidate_after_hardware()
             self.after_idle(self._invalidate_shared_plan, "pump or port settings changed")
 
     def refresh_config_display(self) -> None:
@@ -2648,6 +2809,9 @@ class A4PumpApp(tk.Tk):
         self.finish_gui_operation("connection_test")
         for message in messages:
             self.append_log(self.pump_log, message)
+        workflow = getattr(self, "guided_workflow", None)
+        if workflow is not None:
+            workflow.on_connection_succeeded(messages)
 
     @staticmethod
     def _perform_connection_test(
@@ -2751,6 +2915,9 @@ class A4PumpApp(tk.Tk):
             else:
                 self.out_disabled_message.grid()
         self.update_primary_arm_label()
+        workflow = getattr(self, "guided_workflow", None)
+        if workflow is not None:
+            workflow.refresh()
 
     def update_run_mode_options(self) -> None:
         modes = RUN_MODES if self.is_pump_enabled("OUT") else ["IN only"]

@@ -35,17 +35,17 @@ def active_config(tmp_path: Path) -> Path:
 
 
 def test_canonical_pep440_and_human_version_consistency() -> None:
-    assert app_info.package_version() == "0.2.0b3"
-    assert app_info.human_version() == "0.2.0-beta.3"
-    assert app_info.future_tag_name() == "v0.2.0-beta.3"
-    assert app_info.APP_VERSION == "0.2.0-beta.3"
-    assert 'version = "0.2.0b3"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert app_info.package_version() == "0.2.0b4"
+    assert app_info.human_version() == "0.2.0-beta.4"
+    assert app_info.future_tag_name() == "v0.2.0-beta.4"
+    assert app_info.APP_VERSION == "0.2.0-beta.4"
+    assert 'version = "0.2.0b4"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     for path in (
         ROOT / "README.md",
         ROOT / "CHANGELOG.md",
-        ROOT / "docs" / "releases" / "v0.2.0-beta.3.md",
+        ROOT / "docs" / "releases" / "v0.2.0-beta.4.md",
     ):
-        assert "0.2.0-beta.3" in path.read_text(encoding="utf-8")
+        assert "0.2.0-beta.4" in path.read_text(encoding="utf-8")
 
 
 def test_source_fallback_and_embedded_build_info_loading(tmp_path: Path, monkeypatch) -> None:
@@ -54,13 +54,13 @@ def test_source_fallback_and_embedded_build_info_loading(tmp_path: Path, monkeyp
         "version",
         lambda _name: (_ for _ in ()).throw(app_info.importlib.metadata.PackageNotFoundError()),
     )
-    assert app_info.package_version() == "0.2.0b3"
+    assert app_info.package_version() == "0.2.0b4"
     valid = app_info.source_build_info(build_type="test")
     path = tmp_path / "build_info.json"
     path.write_text(json.dumps(valid), encoding="utf-8")
     loaded = app_info.load_embedded_build_info([path])
     assert loaded is not None
-    assert loaded["human_version"] == "0.2.0-beta.3"
+    assert loaded["human_version"] == "0.2.0-beta.4"
     missing = app_info.load_embedded_build_info([tmp_path / "missing.json"])
     assert missing is None
     path.write_text("{malformed", encoding="utf-8")
@@ -86,10 +86,10 @@ def test_cli_version_has_traceable_fields(capsys) -> None:
         parser.parse_args(["--version"])
     assert exc.value.code == 0
     output = capsys.readouterr().out
-    assert "A4PumpControl 0.2.0-beta.3" in output
+    assert "A4PumpControl 0.2.0-beta.4" in output
     assert "commit " in output
     assert "control compatibility 1" in output
-    assert "package 0.2.0b3" in output
+    assert "package 0.2.0b4" in output
 
 
 def test_validation_schema_v1_read_and_build_identity_report(tmp_path: Path) -> None:
@@ -131,12 +131,12 @@ def test_validation_schema_v1_read_and_build_identity_report(tmp_path: Path) -> 
 
     record = store.create(operator="operator", build_id="abcdef012345")
     assert record["schema_version"] == 2
-    assert record["package_version"] == "0.2.0b3"
+    assert record["package_version"] == "0.2.0b4"
     assert record["control_compatibility_version"] == 1
     assert record["build_commit"] == "abcdef012345"
     store.save(record)
     report = store.export("markdown", tmp_path / "report.md").read_text(encoding="utf-8")
-    assert "Package version: 0.2.0b3" in report
+    assert "Package version: 0.2.0b4" in report
     assert "Control compatibility: 1" in report
     assert "Build fingerprint:" in report
 

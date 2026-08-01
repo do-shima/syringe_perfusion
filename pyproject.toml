@@ -1,6 +1,6 @@
 [project]
 name = "syringe-perfusion"
-version = "0.2.0b3"
+version = "0.2.0b4"
 description = "A4 syringe pump control tools for USB virtual COM operation"
 requires-python = ">=3.9"
 dependencies = [

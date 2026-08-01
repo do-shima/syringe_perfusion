@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.0-beta.4] - 2026-08-01
+
+Superseding hardware-validation release candidate. Beta.3 remains historical but is superseded for routine HIL operation because the primary Experiment screen exposed too many independent settings simultaneously.
+
+### Added
+
+- Added a four-step guided workflow matching laboratory order: Experimental Conditions, Pump Setup, Microscope / NIS Preparation, and Run.
+- Added persistent text-and-icon progress, prerequisite gating, a compact experiment summary, recent-condition and template shortcuts, and session-only NIS preparation checks.
+- Added explicit immediate/delayed NIS wrapper guidance and copy/open/config-agreement actions that never move pumps.
+
+### Changed
+
+- Reduced normal top-level navigation to Experiment, History, and Management / Advanced while retaining hardware, commissioning, profile, calculator, Recipe, manual/jog, diagnostics, and compatibility functions.
+- Moved quantization, exact UART commands, raw identifiers, complete paths, and technical logs behind progressive disclosure.
+- Added responsive wide side-by-side and narrow stacked workflow layouts with fixed progress, primary action, summary, and STOP access.
+- Changing scientific conditions, syringes, or ports now visibly invalidates later workflow readiness and explains that pump programming must be repeated.
+
+### Compatibility
+
+- Control compatibility remains `1`; UART, flow, quantization, timing, START/STOP coordination, cancellation, target snapshots, runtime state, preflight, commissioning, calibration, CLI, and NIS wrapper behavior are unchanged.
+
 ## [0.2.0-beta.3] - 2026-08-01
 
 Superseding hardware-validation release candidate. Beta.2 remains historical but is superseded for HIL use because the Recipe editor and secondary workspaces were not sufficiently usable at normal and high-DPI window sizes.
